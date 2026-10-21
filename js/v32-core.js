@@ -77,14 +77,20 @@ function tampilanPanel(box, ringkas) {
         return '<button type="button" data-mode="' + m[0] + '" class="' + (mode === m[0] ? 'on' : '') + '" aria-pressed="' + (mode === m[0]) + '"><span class="mp-ic">' + ic(m[1]) + '</span><b>' + m[2] + '</b><small>' + m[3] + '</small></button>';
       }).join('') + '</div>' +
       '<div class="xs b muted mt16">WARNA TEMA</div><div class="warna-pilih mt8" id="tmWarna">' +
-      Object.keys(Tema.WARNA).map(function (k) {
+      Object.keys(Tema.WARNA).filter(function (k) { return !(Tema.WARNA[k] && Tema.WARNA[k][2]); }).map(function (k) {
         var w = Tema.WARNA[k], hex = w ? w[0] : brand, nama = w ? w[1] : 'Warna sekolah';
         return '<button type="button" data-warna="' + k + '" class="' + (warna === k ? 'on' : '') + '" aria-pressed="' + (warna === k) + '" title="' + esc(nama) + '"><span class="sw" style="background:' + esc(hex) + '">' + (warna === k ? ic('check') : '') + '</span><small>' + esc(nama) + '</small></button>';
       }).join('') + '</div>' +
+      // v3.3: tema gradasi (perpaduan dua warna)
+      (Object.keys(Tema.WARNA).some(function (k) { return Tema.WARNA[k] && Tema.WARNA[k][2]; }) ? '<div class="xs b muted mt16">TEMA GRADASI</div><div class="warna-pilih mt8" id="tmGradasi">' +
+      Object.keys(Tema.WARNA).filter(function (k) { return Tema.WARNA[k] && Tema.WARNA[k][2]; }).map(function (k) {
+        var w = Tema.WARNA[k];
+        return '<button type="button" data-warna="' + k + '" class="' + (warna === k ? 'on' : '') + '" aria-pressed="' + (warna === k) + '" title="Gradasi ' + esc(w[1]) + '"><span class="sw" style="background:linear-gradient(135deg,' + esc(w[0]) + ',' + esc(w[2]) + ')">' + (warna === k ? ic('check') : '') + '</span><small>' + esc(w[1]) + '</small></button>';
+      }).join('') + '</div>' : '') +
       '<div class="tm-pratinjau mt16"><div class="tp-side"></div><div class="tp-main"><div class="tp-top"></div><div class="tp-card"><i></i><i></i><span class="tp-btn"></span></div></div></div>' +
       (ringkas ? '' : '<div class="note mt16">' + ic('info') + '<div>"Warna sekolah" mengikuti warna Branding yang diatur Super Admin. Pilihan Anda tidak mengubah tampilan pengguna lain.</div></div></div></div>');
     $$('#tmMode button', box).forEach(function (b) { b.onclick = function () { Tema.set({ mode: b.dataset.mode }); gambar(); }; });
-    $$('#tmWarna button', box).forEach(function (b) { b.onclick = function () { Tema.set({ warna: b.dataset.warna }); gambar(); }; });
+    $$('#tmWarna button, #tmGradasi button', box).forEach(function (b) { b.onclick = function () { Tema.set({ warna: b.dataset.warna }); gambar(); }; });
   }
   gambar();
 }

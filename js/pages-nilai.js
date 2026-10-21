@@ -217,7 +217,9 @@ registerPage('guru', 'laporan', {
     st.rows = siswa.map(function (s) {
       var x = bySiswa[s.NIS] || { h: [], u: [], ak: [] }, r = rekap[s.NIS] || { persen: null, H: 0, hari: 0 }, ak = avg(x.ak);
       var rek = ak !== '' && ak < kkm() && r.persen != null && r.persen < batas ? ['bad', 'triangle-alert', 'Panggilan orang tua & remedial'] : ak !== '' && ak < kkm() ? ['bad', 'asterisk', 'Konseling BK & remedial terjadwal'] : r.persen != null && r.persen < batas ? ['warn', 'calendar-x', 'Pembinaan kedisiplinan kehadiran'] : ak !== '' && ak >= 93 ? ['amber', 'trophy', 'Rekomendasi olimpiade / OSN'] : ak !== '' && ak >= 85 ? ['ok', 'circle-check', 'Pertahankan konsistensi belajar'] : ak !== '' ? ['info', 'trending-up', 'Progres stabil, tingkatkan modul mandiri'] : ['', 'circle-dashed', 'Nilai belum lengkap'];
-      return { s: s, hadir: r.persen, H: r.H, hari: r.hari, harian: avg(x.h), ujian: avg(x.u), akhir: ak, pred: predikatOf(ak), rek: rek, perhatian: (ak !== '' && ak < kkm()) || (r.persen != null && r.persen < batas) };
+      var pdp = window.cekPdp ? cekPdp({ hadir: r.persen, akhir: ak, ak: x.ak }) : { hadir: r.persen != null && r.persen < batas, nilai: ak !== '' && ak < kkm() };   // v3.3: kriteria diatur Super Admin
+      if (!window.cekPdp) pdp.perlu = pdp.hadir || pdp.nilai;
+      return { s: s, hadir: r.persen, H: r.H, hari: r.hari, harian: avg(x.h), ujian: avg(x.u), akhir: ak, pred: predikatOf(ak), rek: rek, perhatian: pdp.perlu, pdp: pdp };
     });
     // KPI
     var hd = st.rows.filter(function (r) { return r.hadir != null; }), ak = st.rows.filter(function (r) { return r.akhir !== ''; });
@@ -229,7 +231,7 @@ registerPage('guru', 'laporan', {
     $('#lKpi', el).innerHTML = kpi('Rata-rata Kehadiran', rataHadir == null ? '-' : fmtN(rataHadir) + '<small>%</small>', '<div class="bar"><i style="width:' + (rataHadir || 0) + '%"></i></div><div class="mt8">' + diAtas + ' dari ' + hd.length + ' siswa di atas ambang ' + batas + '%</div>', 'calendar-check') +
       kpi('Indeks Nilai Kelas', idx == null ? '-' : fmtN(idx) + '<small>/ 100</small>', '<div class="row between xs"><span>Target KKM: ' + kkm() + '</span><span class="amber b">' + fmtN(pct(tuntas, ak.length || 1)) + '% Tuntas</span></div><div class="bar mt8"><i class="amber" style="width:' + pct(tuntas, ak.length || 1) + '%"></i></div>', 'sparkles', 'amber') +
       kpi('Efektivitas Modul', fmtN(efek) + '<small>%</small> <span class="pill">' + mat.length + ' Modul</span>', fmtN(akses) + ' akses siswa • rasio siswa membuka materi', 'book-open-check') +
-      kpi('Perlu Pendampingan', '<span class="red">' + perh.length + '</span><small>Siswa</small>', '<span class="red b">● Tindakan khusus diperlukan</span><div class="xs mt8">' + perh.filter(function (r) { return r.hadir != null && r.hadir < batas; }).length + ' presensi &lt;' + batas + '% • ' + perh.filter(function (r) { return r.akhir !== '' && r.akhir < kkm(); }).length + ' nilai &lt; KKM</div>', 'triangle-alert', 'red');
+      kpi('Perlu Pendampingan', '<span class="red">' + perh.length + '</span><small>Siswa</small>', '<span class="red b">● Tindakan khusus diperlukan</span><div class="xs mt8">' + perh.filter(function (r) { return r.pdp.hadir; }).length + ' presensi &lt;' + batas + '% • ' + perh.filter(function (r) { return r.pdp.nilai; }).length + ' ' + (window.kriteriaPdp ? (function (k) { return (k.dasar === 'mapel' ? '≥' + k.minMapel + ' mapel' : 'nilai') + ' &lt; ' + (k.nilaiKkm ? 'KKM' : k.nilai) + (k.aturan === 'DAN' ? ' (DAN)' : ''); })(kriteriaPdp()) : 'nilai &lt; KKM') + '</div>', 'triangle-alert', 'red');
     // Distribusi
     var dist = { A: 0, B: 0, C: 0, D: 0 }; ak.forEach(function (r) { dist[r.pred]++; });
     $('#lDistSub', el).textContent = 'Sebaran nilai akhir gabungan ' + ak.length + ' siswa';

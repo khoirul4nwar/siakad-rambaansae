@@ -1351,7 +1351,7 @@ function apiGuruBootstrap(ctx, d) {
   (data.guru || []).forEach(function (g) { if (ctx.session.ref && String(g.NUPTK) === String(ctx.session.ref)) me = g; });
   // bagian per-akun (di luar cache bersama): peran, hak, geofence, perangkat, presensi hari ini, lonceng
   var akun = Object.assign({ role: ctx.session.role, sa: ctx.session.role === 'superadmin', hak: String(u.h || ''), keu: isKeu_(ctx), terhubungGuru: !!me,
-    presensiHariIni: me ? presensiHariIni_(ctx.session.uid) : null, notifBelum: notifBelum_(ctx.session.uid) }, lokasiInfo_(ctx));
+    presensiHariIni: me ? (typeof prgHariIni_ === 'function' ? prgHariIni_(ctx.session.uid) : presensiHariIni_(ctx.session.uid)) : null, notifBelum: notifBelum_(ctx.session.uid) }, lokasiInfo_(ctx));   // v3.3 turbo: indeks presensi
   return ok_(Object.assign({}, data, { me: me || { nama_lengkap: u.n || ctx.session.email, email: ctx.session.email, jabatan: ROLES[ctx.session.role] }, role: 'guru', akun: akun }));
 }
 
@@ -1803,7 +1803,8 @@ function autoAlphaCek_() {
 function apiAbsenList(ctx, d) {
   var dari = d.dari || today_(), sampai = d.sampai || dari;
   var sMap = {}; DB.all('Siswa').forEach(function (s) { sMap[s.NIS] = s; });
-  var rows = DB.all('Absensi').filter(function (a) {
+  var sumber = typeof absenRentang_ === 'function' ? absenRentang_(dari, sampai) : DB.all('Absensi');   // v3.3 turbo: hanya baris dalam rentang
+  var rows = sumber.filter(function (a) {
     var t = String(a.tanggal);
     return t >= dari && t <= sampai && (!d.kelas_id || a.kelas_id === d.kelas_id) && (!d.NIS || String(a.NIS) === String(d.NIS));
   }).map(function (a) { var s = sMap[a.NIS] || {}; return Object.assign({}, a, { nama: s.nama_lengkap || '(dihapus)' }); })
@@ -2568,8 +2569,9 @@ function apiSaMonitor(ctx, d) {
   var uidByRef = {};
   Object.keys(uidx).forEach(function (id) { var u = uidx[id]; if (u.r !== 'siswa' && u.f) uidByRef[u.f] = id; });
   var lokNama = {}; DB.all('Lokasi').forEach(function (l) { lokNama[l.lokasi_id] = l.nama; }); lokNama.DEFAULT = setting_('NAMA_SEKOLAH', 'Sekolah');
-  var presAll = DB.all('PresensiGuru'), pres = {};
-  presAll.forEach(function (p) { if (String(p.tanggal) === tdy) pres[p.NUPTK] = p; });
+  var prgI = typeof prgIdx_ === 'function' ? prgIdx_() : null, presAll = prgI ? [] : DB.all('PresensiGuru'), pres = {};   // v3.3 turbo: indeks presensi
+  if (prgI) Object.keys(prgI.hariIniNuptk).forEach(function (n) { pres[n] = prgI.hariIniNuptk[n]; });
+  else presAll.forEach(function (p) { if (String(p.tanggal) === tdy) pres[p.NUPTK] = p; });
   var guru = DB.all('Guru').filter(function (g) { return (g.status || 'Aktif') === 'Aktif'; }).map(function (g) {
     var id = uidByRef[g.NUPTK], u = uidx[id] || {}, p = pres[g.NUPTK], s = seen[id];
     return { NUPTK: g.NUPTK, nama: g.nama_lengkap, mapel: g.mata_pelajaran, jabatan: g.jabatan, foto: g.foto_profil_url, user_id: id || '', role: u.r || '', akunAktif: !!u.a,
@@ -2578,7 +2580,8 @@ function apiSaMonitor(ctx, d) {
   });
   // siswa: kehadiran hari ini per kelas
   var siswa = DB.all('Siswa').filter(function (s) { return (s.status || 'Aktif') === 'Aktif'; }), absT = {};
-  DB.all('Absensi').forEach(function (a) { if (String(a.tanggal) === tdy) absT[a.NIS] = String(a.status).charAt(0).toUpperCase(); });
+  var absHI = typeof buildGuruBootstrap_ === 'function' ? cached_('bootG_' + versKey_(), 600, buildGuruBootstrap_).absensiHariIni : DB.all('Absensi').filter(function (a) { return String(a.tanggal) === tdy; });   // v3.3 turbo: pakai cache beranda bersama
+  absHI.forEach(function (a) { absT[a.NIS] = String(a.status).charAt(0).toUpperCase(); });
   var idx = absenIndex_(), perKelas = {};
   DB.all('Kelas').forEach(function (k) { perKelas[k.kelas_id] = { kelas_id: k.kelas_id, nama: k.nama_kelas, jenjang: k.jenjang, total: 0, H: 0, I: 0, S: 0, A: 0, belum: 0, sumPersen: 0, nPersen: 0 }; });
   siswa.forEach(function (s) {
@@ -2595,8 +2598,8 @@ function apiSaMonitor(ctx, d) {
   var tren = [];
   for (var i = 6; i >= 0; i--) {
     var dt = new Date(new Date(tdy + 'T00:00:00+07:00').getTime() - i * 864e5), t = Utilities.formatDate(dt, APP.TZ, 'yyyy-MM-dd');
-    var hadir = presAll.filter(function (p) { return String(p.tanggal) === t && p.jam_masuk; });
-    tren.push({ tanggal: t, hari: HARI[Number(Utilities.formatDate(dt, APP.TZ, 'u')) % 7], hadir: hadir.length, terlambat: hadir.filter(function (p) { return p.terlambat === 'YA'; }).length });
+    var hadir = prgI ? null : presAll.filter(function (p) { return String(p.tanggal) === t && p.jam_masuk; }), tx = prgI ? (prgI.tren[t] || { hadir: 0, terlambat: 0 }) : null;
+    tren.push({ tanggal: t, hari: HARI[Number(Utilities.formatDate(dt, APP.TZ, 'u')) % 7], hadir: tx ? tx.hadir : hadir.length, terlambat: tx ? tx.terlambat : hadir.filter(function (p) { return p.terlambat === 'YA'; }).length });
   }
   var akun = { total: 0, aktif: 0, nonaktif: 0, superadmin: 0, guru: 0, siswa: 0, perangkat: 0 };
   Object.keys(uidx).forEach(function (id) { var u = uidx[id]; akun.total++; u.a ? akun.aktif++ : akun.nonaktif++; if (akun[u.r] !== undefined) akun[u.r]++; if (u.d) akun.perangkat++; });
@@ -8164,6 +8167,7 @@ if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasa
 /**
  * =====================================================================
  *  SIAKAD SISWA v3.2 — RatingGuru.gs : Penilaian (rating) guru oleh siswa — ANONIM
+ *  v3.3: aspek penilaian bisa diatur Super Admin (3–6 aspek: ganti nama / tambah / nonaktifkan)
  *  - Siswa menilai guru yang mengajar di kelasnya (dari Jadwal), 4 aspek bintang 1–5 + komentar
  *  - Satu penilaian per siswa × guru × mapel × semester (bisa diubah selama periode dibuka)
  *  - Identitas siswa TIDAK disimpan: kolom `responden` berisi sidik HMAC (garam di Script Properties)
@@ -8173,11 +8177,23 @@ if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasa
  * =====================================================================
  */
 var EXT = (typeof EXT !== 'undefined' && EXT) || { schema: {}, seed: [], routes: [], tick: [], reset: [], hooks: {} };
-EXT.schema.RatingGuru = { key: 'rating_id', prefix: 'RTG', cols: ['rating_id', 'guru_id', 'mata_pelajaran', 'kelas_id', 'tahun_ajaran', 'semester', 'responden', 'a1', 'a2', 'a3', 'a4', 'nilai', 'komentar', 'dibuat_pada', 'diperbarui_pada'] };
+EXT.schema.RatingGuru = { key: 'rating_id', prefix: 'RTG', cols: ['rating_id', 'guru_id', 'mata_pelajaran', 'kelas_id', 'tahun_ajaran', 'semester', 'responden', 'a1', 'a2', 'a3', 'a4', 'nilai', 'komentar', 'dibuat_pada', 'diperbarui_pada', 'a5', 'a6'] };
 EXT.seed.push(['RATING_GURU_AKTIF', 'YA', 'YA/TIDAK — siswa dapat memberi rating guru (anonim) pada semester berjalan']);
 
-var RTG_ASPEK = ['Penguasaan materi', 'Cara menjelaskan', 'Kedisiplinan & ketepatan waktu', 'Sikap & keteladanan'];
+var RTG_ASPEK = ['Penguasaan materi', 'Teknik mengajar', 'Kedisiplinan & ketepatan waktu', 'Sikap & keteladanan'];   // bawaan (v3.3)
+var RTG_SLOT = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'];
 var RTG_MIN_ANONIM = 3;
+EXT.seed.push(['RATING_ASPEK', '', 'Aspek rating guru (JSON, diatur dari menu Rating Guru) — kosong = 4 aspek bawaan']);
+/** Daftar aspek: [{ id:'a1', nama, aktif }] — slot a1..a6; nama slot lama tetap dipakai untuk penilaian lama */
+function ratingAspekSemua_() {
+  var raw = String(setting_('RATING_ASPEK', '') || ''), out = null;
+  if (raw) { try { out = JSON.parse(raw); } catch (e) { out = null; } }
+  if (!Array.isArray(out) || !out.length) out = RTG_ASPEK.map(function (n, i) { return { id: RTG_SLOT[i], nama: n, aktif: true }; });
+  var ada = {}; out = out.filter(function (x) { if (!x || RTG_SLOT.indexOf(x.id) < 0 || ada[x.id]) return false; ada[x.id] = 1; return true; })
+    .map(function (x) { return { id: x.id, nama: String(x.nama || '').substring(0, 60), aktif: x.aktif !== false }; });
+  return out.sort(function (a, b) { return RTG_SLOT.indexOf(a.id) - RTG_SLOT.indexOf(b.id); });
+}
+function ratingAspek_() { return ratingAspekSemua_().filter(function (x) { return x.aktif && x.nama; }); }
 
 /** Garam sidik responden — dibuat sekali, hanya di Script Properties (tidak pernah dikirim ke browser) */
 function ratingGaram_() {
@@ -8212,13 +8228,13 @@ function ratingGuruKelas_(kelas) {
 /** rating.saya — daftar guru kelas siswa + penilaian yang sudah diberikan (siswa) */
 function apiRatingSaya(ctx) {
   var s = ratingSiswa_(ctx); if (!s) return fail_('Data siswa tidak ditemukan.');
-  var per = ratingPeriode_(), punya = {};
+  var per = ratingPeriode_(), punya = {}, asp = ratingAspek_();
   DB.all('RatingGuru').forEach(function (r) { if (String(r.tahun_ajaran) === per.ta && String(r.semester) === per.sem) punya[r.responden] = r; });
   var guru = ratingGuruKelas_(s.kelas_id).map(function (g) {
     var r = punya[ratingSidik_(ctx.session.uid, g.guru_id, g.mata_pelajaran, per.ta, per.sem)];
-    return Object.assign(g, { sudah: !!r, a: r ? [num_(r.a1), num_(r.a2), num_(r.a3), num_(r.a4)] : null, nilai: r ? num_(r.nilai) : null, komentar: r ? String(r.komentar || '') : '' });
+    return Object.assign(g, { sudah: !!r, a: r ? asp.map(function (x) { return num_(r[x.id]); }) : null, nilai: r ? num_(r.nilai) : null, komentar: r ? String(r.komentar || '') : '' });
   });
-  return ok_({ aktif: ratingAktif_(), periode: per, aspek: RTG_ASPEK, guru: guru });
+  return ok_({ aktif: ratingAktif_(), periode: per, aspek: asp.map(function (x) { return x.nama; }), aspekId: asp.map(function (x) { return x.id; }), guru: guru });
 }
 /** rating.kirim — d: { guru_id, mata_pelajaran, a: [4 × 1–5], komentar } (siswa) */
 function apiRatingKirim(ctx, d) {
@@ -8227,14 +8243,16 @@ function apiRatingKirim(ctx, d) {
   var gid = String(d.guru_id || ''), mp = String(d.mata_pelajaran || '').trim();
   var g = ratingGuruKelas_(s.kelas_id).filter(function (x) { return x.guru_id === gid && ptmNormR_(x.mata_pelajaran) === ptmNormR_(mp); })[0];
   if (!g) return fail_('Guru ini tidak mengajar di kelas Anda.', { code: 'FORBIDDEN' });
-  var a = (Array.isArray(d.a) ? d.a : []).slice(0, 4).map(Number);
-  if (a.length !== 4 || a.some(function (x) { return !(x >= 1 && x <= 5 && Math.floor(x) === x); })) return fail_('Beri bintang 1–5 untuk keempat aspek.');
+  var asp = ratingAspek_(), a = (Array.isArray(d.a) ? d.a : []).slice(0, asp.length).map(Number);
+  if (a.length !== asp.length || a.some(function (x) { return !(x >= 1 && x <= 5 && Math.floor(x) === x); })) return fail_('Beri bintang 1–5 untuk semua aspek (' + asp.length + ' aspek).');
   var kom = String(d.komentar || '').replace(/[\u0000-\u0008\u000B-\u001F]/g, '').trim().substring(0, 300);
   var per = ratingPeriode_(), sid = ratingSidik_(ctx.session.uid, gid, g.mata_pelajaran, per.ta, per.sem), now = nowIso_();
-  var nilai = Math.round(a.reduce(function (x, y) { return x + y; }, 0) / 4 * 100) / 100;
+  var nilai = Math.round(a.reduce(function (x, y) { return x + y; }, 0) / a.length * 100) / 100;
   var ada = DB.all('RatingGuru').filter(function (r) { return r.responden === sid && String(r.tahun_ajaran) === per.ta && String(r.semester) === per.sem; })[0];
   if (kom && (!ada || String(ada.komentar || '') !== kom) && typeof spamCek_ === 'function') { var sp = spamCek_(ctx, kom, 'rating'); if (sp) return fail_(sp); }   // kata terlarang, tautan, batas per menit
-  var row = { guru_id: gid, mata_pelajaran: g.mata_pelajaran, kelas_id: s.kelas_id, tahun_ajaran: per.ta, semester: per.sem, responden: sid, a1: a[0], a2: a[1], a3: a[2], a4: a[3], nilai: nilai, komentar: kom, diperbarui_pada: now };
+  var row = { guru_id: gid, mata_pelajaran: g.mata_pelajaran, kelas_id: s.kelas_id, tahun_ajaran: per.ta, semester: per.sem, responden: sid, nilai: nilai, komentar: kom, diperbarui_pada: now };
+  RTG_SLOT.forEach(function (id) { row[id] = ''; });                       // aspek nonaktif dikosongkan
+  asp.forEach(function (x, i) { row[x.id] = a[i]; });
   if (ada) { row.rating_id = ada.rating_id; DB.updateBatch('RatingGuru', 'rating_id', [row]); }
   else { row.rating_id = reserveIds_('RatingGuru', 1)[0]; row.dibuat_pada = now; DB.appendBatch('RatingGuru', [row]); }
   bump_('rtg', true);
@@ -8243,7 +8261,7 @@ function apiRatingKirim(ctx, d) {
 /** Ringkasan rating seorang guru (anonim) */
 function ratingRingkas_(rows, denganKomentar) {
   var km = {}; DB.all('Kelas').forEach(function (k) { km[k.kelas_id] = k.nama_kelas; });
-  var n = rows.length, asp = [0, 1, 2, 3].map(function (i) { return rataR_(rows.map(function (r) { return num_(r['a' + (i + 1)]); })); });
+  var n = rows.length, asp = ratingAspek_().map(function (x) { return rataR_(rows.filter(function (r) { return r[x.id] !== '' && r[x.id] !== undefined && r[x.id] !== null; }).map(function (r) { return num_(r[x.id]); })); });
   var sebaran = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   rows.forEach(function (r) { var b = Math.min(5, Math.max(1, Math.round(num_(r.nilai)))); sebaran[b]++; });
   var grup = {};
@@ -8269,7 +8287,7 @@ function apiRatingGuru(ctx, d) {
   var periodeAda = {}; semua.forEach(function (r) { periodeAda[r.tahun_ajaran + '|' + r.semester] = 1; }); periodeAda[per.ta + '|' + per.sem] = 1;
   var g = DB.find('Guru', 'NUPTK', gid) || {};
   return ok_(Object.assign({ guru: { NUPTK: gid, nama: g.nama_lengkap || '', mata_pelajaran: g.mata_pelajaran || '', foto: g.foto_profil_url || '' }, periode: { ta: ta, sem: sem },
-    periodeList: Object.keys(periodeAda).sort().reverse().map(function (k) { var x = k.split('|'); return { ta: x[0], sem: x[1] }; }), aspekLabel: RTG_ASPEK, aktif: ratingAktif_(), minAnonim: RTG_MIN_ANONIM }, ratingRingkas_(rows, true)));
+    periodeList: Object.keys(periodeAda).sort().reverse().map(function (k) { var x = k.split('|'); return { ta: x[0], sem: x[1] }; }), aspekLabel: ratingAspek_().map(function (x) { return x.nama; }), aktif: ratingAktif_(), minAnonim: RTG_MIN_ANONIM }, ratingRingkas_(rows, true)));
 }
 /** rating.rekap — semua guru (Super Admin). d: { tahun_ajaran?, semester? } */
 function apiRatingRekap(ctx, d) {
@@ -8282,7 +8300,7 @@ function apiRatingRekap(ctx, d) {
   }).sort(function (a, b) { return (b.n ? 1 : 0) - (a.n ? 1 : 0) || b.rata - a.rata || b.n - a.n || a.nama.localeCompare(b.nama, 'id'); });
   var total = Object.keys(by).reduce(function (a, k) { return a + by[k].length; }, 0), semuaNilai = [];
   Object.keys(by).forEach(function (k) { by[k].forEach(function (r) { semuaNilai.push(num_(r.nilai)); }); });
-  return ok_({ periode: { ta: ta, sem: sem }, aktif: ratingAktif_(), aspekLabel: RTG_ASPEK, total: total, rata: rataR_(semuaNilai), dinilai: Object.keys(by).length, guru: guru });
+  return ok_({ periode: { ta: ta, sem: sem }, aktif: ratingAktif_(), aspekLabel: ratingAspek_().map(function (x) { return x.nama; }), aspekSemua: ratingAspekSemua_(), total: total, rata: rataR_(semuaNilai), dinilai: Object.keys(by).length, guru: guru, sekolah: typeof lapSekolah_ === 'function' ? lapSekolah_() : { nama: setting_('NAMA_SEKOLAH', APP.NAME) } });
 }
 /** rating.atur — buka/tutup penilaian (Super Admin). d: { aktif: 'YA'|'TIDAK' } */
 function apiRatingAtur(ctx, d) {
@@ -8291,14 +8309,35 @@ function apiRatingAtur(ctx, d) {
   return ok_({ aktif: v === 'YA' }, v === 'YA' ? 'Penilaian guru oleh siswa DIBUKA.' : 'Penilaian guru oleh siswa DITUTUP.');
 }
 
+/** rating.aspek.atur (Super Admin) — d: { aspek: [{ id:'a1'..'a6', nama, aktif }] } → 3–6 aspek aktif */
+function apiRatingAspekAtur(ctx, d) {
+  var list = Array.isArray(d.aspek) ? d.aspek : [], ada = {}, out = [];
+  for (var i = 0; i < list.length; i++) {
+    var x = list[i] || {}, id = String(x.id || ''), nama = String(x.nama || '').replace(/\s+/g, ' ').trim();
+    if (RTG_SLOT.indexOf(id) < 0 || ada[id]) continue;
+    ada[id] = 1;
+    if (x.aktif !== false && (nama.length < 3 || nama.length > 60)) return fail_('Nama aspek harus 3–60 karakter.');
+    out.push({ id: id, nama: nama, aktif: x.aktif !== false && !!nama });
+  }
+  var aktif = out.filter(function (x) { return x.aktif; });
+  if (aktif.length < 3 || aktif.length > 6) return fail_('Aspek aktif harus 3–6.');
+  var nm = {}; for (var j = 0; j < aktif.length; j++) { var k = aktif[j].nama.toLowerCase(); if (nm[k]) return fail_('Nama aspek tidak boleh sama: ' + aktif[j].nama); nm[k] = 1; }
+  saveSettings_({ RATING_ASPEK: JSON.stringify(out) });
+  bump_('rtg', true);
+  var res = ok_({ aspek: ratingAspekSemua_() }, 'Aspek penilaian disimpan (' + aktif.length + ' aspek aktif).');
+  res.auditDetail = aktif.map(function (x) { return x.id + '=' + x.nama; }).join('; ');
+  return res;
+}
+
 EXT.routes.push(function (add) {
+  add('rating.aspek.atur', apiRatingAspekAtur, 'sa', true, { audit: true });
   add('rating.saya', apiRatingSaya, 'siswa');
   add('rating.kirim', apiRatingKirim, 'siswa', true);
   add('rating.guru', apiRatingGuru, 'guru');
   add('rating.rekap', apiRatingRekap, 'sa');
   add('rating.atur', apiRatingAtur, 'sa', true, { audit: true });
 });
-(EXT.hooks.cfg = EXT.hooks.cfg || []).push(function (o, c) { o.RATING_GURU_AKTIF = c.RATING_GURU_AKTIF || 'YA'; });
+(EXT.hooks.cfg = EXT.hooks.cfg || []).push(function (o, c) { o.RATING_GURU_AKTIF = c.RATING_GURU_AKTIF || 'YA'; o.RATING_ASPEK = c.RATING_ASPEK || ''; });
 (EXT.hooks.demoClear = EXT.hooks.demoClear || []).push(function () {
   var sh = getSheet_('RatingGuru'), last = sh.getLastRow(); if (last > 1) sh.getRange(2, 1, last - 1, sh.getLastColumn()).clearContent(); invalidateRows_('RatingGuru');
 });
@@ -8361,6 +8400,706 @@ EXT.routes.push(function (add) {
   add('captcha.atur', apiCaptchaAtur, 'sa', true, { audit: true });
 });
 (EXT.hooks.cfg = EXT.hooks.cfg || []).push(function (o, c) { o.CAPTCHA_LOGIN = c.CAPTCHA_LOGIN || 'YA'; });
+if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasangEkstensi_();
+
+;
+// ==== Kepegawaian.gs ====
+/**
+ * =====================================================================
+ *  SIAKAD SISWA v3.3 — Kepegawaian.gs : Presensi Pegawai (guru & staf)
+ *  - Kategori presensi: WFO & Dinas Dalam (wajib di area sekolah / geofence),
+ *    Dinas Luar, Diklat, Apel (boleh di mana saja: GPS tetap tercatat + selfie + keterangan,
+ *    surat tugas opsional)
+ *  - Tidak Hadir (Sakit / Izin / Cuti): wajib unggah surat keterangan → disetujui Super Admin
+ *  - Aktivitas harian pegawai (laporan kinerja), profil pegawai
+ *  - Absen manual guru oleh Super Admin (lupa presensi tetapi hadir tepat waktu)
+ *  - Turbo: indeks presensi berversi (beranda & Presensi Saya tidak membaca sheet PresensiGuru)
+ *  Sheet baru (aditif): IzinPegawai, AktivitasPegawai, BuktiKehadiran. Sheet lama tidak diubah:
+ *  kategori disimpan di kolom PresensiGuru.status yang sudah ada ("Hadir" = WFO).
+ *  Berkas bukti disimpan PRIVAT di Drive (folder SIAKAD_BUKTI_KEHADIRAN) dan hanya bisa dibuka
+ *  pemiliknya / Super Admin lewat server (bukti.lihat), tidak pernah dibagikan publik.
+ * =====================================================================
+ */
+var EXT = (typeof EXT !== 'undefined' && EXT) || { schema: {}, seed: [], routes: [], tick: [], reset: [], hooks: {} };
+Object.assign(EXT.schema, {
+  IzinPegawai: { key: 'izin_id', prefix: 'IZN', cols: ['izin_id', 'user_id', 'NUPTK', 'nama', 'jenis', 'tanggal_mulai', 'tanggal_selesai', 'jumlah_hari', 'alasan', 'bukti_id', 'status',
+    'diputuskan_oleh', 'diputuskan_pada', 'catatan_putusan', 'dibuat_pada', 'diperbarui_pada'] },
+  AktivitasPegawai: { key: 'aktivitas_id', prefix: 'AKP', cols: ['aktivitas_id', 'user_id', 'NUPTK', 'nama', 'tanggal', 'jam_mulai', 'jam_selesai', 'kegiatan', 'uraian', 'hasil', 'lampiran_id',
+    'dibuat_pada', 'diperbarui_pada'] },
+  BuktiKehadiran: { key: 'bukti_id', prefix: 'BKT', cols: ['bukti_id', 'jenis', 'ref_id', 'pemilik', 'tanggal', 'file_id', 'nama_file', 'mime', 'ukuran', 'diunggah_oleh', 'dibuat_pada'] }
+});
+
+var PEG_KATEGORI = {
+  WFO:         { kode: 'WFO', label: 'WFO', status: 'Hadir', geofence: true, ket: false, info: 'Bekerja langsung dari kantor/sekolah' },
+  DINAS_DALAM: { kode: 'DINAS_DALAM', label: 'Dinas Dalam', status: 'Dinas Dalam', geofence: true, ket: true, info: 'Tugas kedinasan di dalam area instansi' },
+  DINAS_LUAR:  { kode: 'DINAS_LUAR', label: 'Dinas Luar', status: 'Dinas Luar', geofence: false, ket: true, info: 'Tugas di luar kantor (kunjungan, rapat instansi luar, luar kota)' },
+  DIKLAT:      { kode: 'DIKLAT', label: 'Diklat', status: 'Diklat', geofence: false, ket: true, info: 'Pendidikan & pelatihan, kursus, workshop kedinasan' },
+  APEL:        { kode: 'APEL', label: 'Apel', status: 'Apel', geofence: false, ket: true, info: 'Kegiatan kedinasan (apel, festival kabupaten, dll.)' }
+};
+var PEG_HADIR = { 'Hadir': 'WFO', 'Dinas Dalam': 'DINAS_DALAM', 'Dinas Luar': 'DINAS_LUAR', 'Diklat': 'DIKLAT', 'Apel': 'APEL' };
+var PEG_TIDAK = ['Sakit', 'Izin', 'Cuti'];
+var PEG_MIME = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
+var PEG_MAKS_B64 = 4300000;                      // ±3,2 MB berkas asli
+var PEG_HARI_INDEKS = 62;
+
+// ---------------------------------------------------------------------
+// 1. BANTUAN
+// ---------------------------------------------------------------------
+function pegKategori_(k) { return PEG_KATEGORI[String(k || '').toUpperCase()] || null; }
+function pegKategoriDariStatus_(st) { var k = PEG_HADIR[String(st || 'Hadir')]; return k ? PEG_KATEGORI[k] : null; }
+function pegTglOk_(t) { return /^\d{4}-\d{2}-\d{2}$/.test(String(t || '')); }
+function pegJamOk_(j) { return /^\d{2}:\d{2}$/.test(String(j || '')); }
+function pegTeks_(v, n) { return String(v === undefined || v === null ? '' : v).replace(/\r\n/g, '\n').trim().substring(0, n || 500); }
+function pegUidGuru_(nuptk) {
+  var idx = userIdx_(), out = '';
+  Object.keys(idx).forEach(function (id) { var u = idx[id]; if (!out && u.r !== 'siswa' && String(u.f) === String(nuptk)) out = id; });
+  return out;
+}
+function pegTambahHari_(t, n) { return Utilities.formatDate(new Date(new Date(t + 'T12:00:00+07:00').getTime() + n * 864e5), APP.TZ, 'yyyy-MM-dd'); }
+function pegHari_(t) { return HARI[Number(Utilities.formatDate(new Date(t + 'T12:00:00+07:00'), APP.TZ, 'u')) % 7]; }
+
+/** Folder privat bukti kehadiran (dibuat sekali, ID di Script Properties) */
+function pegFolder_() {
+  var id = prop_('KEHADIRAN_FOLDER');
+  if (id) return id;
+  var root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID), f = root.createFolder('SIAKAD_BUKTI_KEHADIRAN');
+  setProp_('KEHADIRAN_FOLDER', f.getId());
+  return f.getId();
+}
+/** Simpan berkas bukti (gambar/PDF) → baris BuktiKehadiran. f = { name, mime, data(base64) } */
+function pegSimpanBukti_(ctx, f, jenis, refId, pemilik, tanggal) {
+  if (!f || !f.data) return { err: 'Berkas belum dipilih.' };
+  var mime = String(f.mime || '').toLowerCase();
+  if (!PEG_MIME[mime]) return { err: 'Format berkas harus JPG, PNG, WEBP, atau PDF.' };
+  var b64 = String(f.data).replace(/^data:[^,]+,/, '');
+  if (b64.length > PEG_MAKS_B64) return { err: 'Ukuran berkas maksimal ±3 MB.' };
+  var nama = pegTeks_(f.name, 80).replace(/[\\/:*?"<>|]/g, '_') || (jenis + '.' + PEG_MIME[mime]);
+  var file = saveBase64File_(pegFolder_(), jenis.toUpperCase() + '_' + pemilik + '_' + String(tanggal || today_()).replace(/-/g, '') + '_' + nama, mime, b64);
+  var row = { bukti_id: reserveIds_('BuktiKehadiran', 1)[0], jenis: jenis, ref_id: refId || '', pemilik: String(pemilik || ''), tanggal: tanggal || today_(), file_id: file.getId(),
+    nama_file: nama, mime: mime, ukuran: Math.round(b64.length * 0.75), diunggah_oleh: ctx.session.uid, dibuat_pada: nowIso_() };
+  DB.appendBatch('BuktiKehadiran', [row]);
+  return { row: row };
+}
+
+// ---------------------------------------------------------------------
+// 2. TURBO — indeks presensi (hari ini + 62 hari terakhir per akun + tren 8 hari)
+//    Dibangun sekali per versi 'presensi'; tulis dari modul ini membangun ulang dari memori.
+// ---------------------------------------------------------------------
+//    Disimpan terpisah agar tetap muat di cache walau pegawai ratusan:
+//    - bagian umum (hari ini + tren, kecil) di satu kunci
+//    - riwayat 62 hari per pegawai di kunci masing-masing (±10 KB per orang)
+var _PRG = null, _PRG_U = {};
+EXT.reset.push(function () { _PRG = null; _PRG_U = {}; });
+function prgKunci_() { return 'prgIdx_' + ver_('presensi') + '_' + today_(); }
+function prgRingkas_(p) {
+  return { presensi_id: p.presensi_id, user_id: p.user_id, NUPTK: String(p.NUPTK), nama: p.nama, tanggal: String(p.tanggal), jam_masuk: p.jam_masuk, jam_pulang: p.jam_pulang, status: p.status || 'Hadir',
+    lokasi_id: p.lokasi_id, jarak_m: p.jarak_m, terlambat: p.terlambat, keterangan: String(p.keterangan || '').substring(0, 160), foto_id: p.foto_id ? 1 : '' };
+}
+function prgBangun_(rows) {
+  var tdy = today_(), batas = pegTambahHari_(tdy, -PEG_HARI_INDEKS), awalTren = pegTambahHari_(tdy, -8), hariIni = {}, byUid = {}, byNuptk = {}, tren = {};
+  rows.forEach(function (p) {
+    var t = String(p.tanggal); if (t < batas || t > tdy) return;            // batas tanggal dihitung sekali (bukan per baris)
+    var r = prgRingkas_(p);
+    if (t === tdy) { if (p.user_id) hariIni[p.user_id] = r; byNuptk[String(p.NUPTK)] = r; }
+    if (p.user_id) (byUid[p.user_id] = byUid[p.user_id] || []).push(r);
+    if (t >= awalTren && p.jam_masuk) { var x = tren[t] = tren[t] || { hadir: 0, terlambat: 0 }; x.hadir++; if (p.terlambat === 'YA') x.terlambat++; }
+  });
+  var uids = {};
+  Object.keys(byUid).forEach(function (u) { uids[u] = 1; byUid[u].sort(function (a, b) { return String(b.tanggal).localeCompare(String(a.tanggal)); }); if (byUid[u].length > 70) byUid[u] = byUid[u].slice(0, 70); });
+  return { umum: { tgl: tdy, hariIni: hariIni, hariIniNuptk: byNuptk, tren: tren, uids: uids }, byUid: byUid };
+}
+/** Simpan indeks: bagian umum + riwayat per pegawai (putAll, per 100 kunci) */
+function prgSimpan_(d) {
+  var k = prgKunci_(), c = CacheService.getScriptCache(), m = {}, n = 0;
+  var kirim = function () { if (n) { try { c.putAll(m, 21600); } catch (e) {} m = {}; n = 0; } };
+  Object.keys(d.byUid).forEach(function (u) { var s = JSON.stringify(d.byUid[u]); if (s.length < 95000) { m[k + '_u_' + u] = s; n++; if (n >= 100) kirim(); } });
+  kirim();
+  CacheX.put(k, d.umum, 21600);                                          // bagian umum ditulis TERAKHIR
+  _PRG = d.umum; _PRG_U = d.byUid;
+}
+function prgBangunUlang_() { var d = prgBangun_(DB.all('PresensiGuru')); prgSimpan_(d); return d; }
+function prgIdx_() {
+  if (_PRG) return _PRG;
+  var c = CacheX.get(prgKunci_());
+  if (c) return (_PRG = c);
+  return prgBangunUlang_().umum;
+}
+/** Riwayat 62 hari satu akun (dari cache per akun; bila hilang → bangun ulang sekali) */
+function prgRiwayat_(uid) {
+  if (!uid) return [];
+  if (_PRG_U[uid]) return _PRG_U[uid];
+  var umum = prgIdx_();
+  if (_PRG_U[uid]) return _PRG_U[uid];
+  if (!umum.uids || !umum.uids[uid]) return (_PRG_U[uid] = []);
+  var s = CacheService.getScriptCache().get(prgKunci_() + '_u_' + uid);
+  if (s) { try { return (_PRG_U[uid] = JSON.parse(s)); } catch (e) {} }
+  return prgBangunUlang_().byUid[uid] || [];
+}
+/** Setelah menulis PresensiGuru di modul ini: versi naik + indeks dibangun dari baris di memori (0 baca ekstra) */
+function prgSegarkan_(rowsBaru) {
+  bump_('presensi', true); _PRG = null; _PRG_U = {};
+  try { prgSimpan_(prgBangun_(rowsBaru)); } catch (e) { _PRG = null; _PRG_U = {}; }
+}
+function prgHariIni_(uid) { return prgIdx_().hariIni[uid] || null; }
+
+// ---------------------------------------------------------------------
+// 3. PRESENSI PEGAWAI PER KATEGORI
+// ---------------------------------------------------------------------
+/** presensi.pegawai — d: { kategori, jenis: masuk|pulang, lat, lng, acc, foto, keterangan, surat:{name,mime,data}, device_info } */
+function apiPresensiPegawai(ctx, d) {
+  var g = guruDariCtx_(ctx);
+  if (!g) return fail_('Akun Anda belum terhubung ke data guru/pegawai (NUPTK). Hubungi Super Admin.');
+  var jenis = d.jenis === 'pulang' ? 'pulang' : 'masuk', tdy = today_(), jam = timeNow_();
+  var semua = DB.all('PresensiGuru'), ada = semua.filter(function (p) { return p.user_id === ctx.session.uid && String(p.tanggal) === tdy; })[0] || null;
+  var kat = jenis === 'pulang' && ada && ada.jam_masuk ? pegKategoriDariStatus_(ada.status) : pegKategori_(d.kategori);
+  if (!kat) return fail_('Pilih kategori presensi: WFO, Dinas Dalam, Dinas Luar, Diklat, atau Apel.');
+  var dev = cekPerangkat_(ctx, d.device_info);
+  if (!dev.ok) return fail_(dev.msg, { code: 'DEVICE' });
+  var la = Number(d.lat), lo = Number(d.lng);
+  if (d.lat === undefined || d.lat === null || d.lat === '' || isNaN(la) || isNaN(lo)) return fail_('Lokasi GPS belum terbaca. Aktifkan izin lokasi di perangkat.', { code: 'GPS' });
+  var lok;
+  if (kat.geofence) {
+    lok = cekLokasi_(d.lat, d.lng, { peran: 'guru', user: ctx.user, acc: d.acc });
+    if (!lok.ok) return fail_(lok.msg + (kat.kode === 'WFO' ? '' : ' Kategori ' + kat.label + ' wajib di area sekolah.'), { code: 'OUT_OF_RANGE', jarak: lok.jarak, lokasi: lok.nama });
+  } else {
+    var dekat = cekLokasi_(d.lat, d.lng, { peran: 'guru', user: ctx.user, acc: d.acc });   // hanya untuk catatan jarak
+    lok = { ok: true, lokasi_id: 'LUAR', nama: 'Luar kantor', jarak: dekat.jarak };
+  }
+  var ket = pegTeks_(d.keterangan, 200);
+  var selfieWajib = !kat.geofence || setting_('PRESENSI_GURU_SELFIE', 'TIDAK') === 'YA';
+  var fotoId = '';
+  if (d.foto) {
+    if (String(d.foto).length > 3 * 1024 * 1024) return fail_('Ukuran foto terlalu besar.');
+    fotoId = saveBase64File_(CONFIG.SELFIE_FOLDER, 'GURU_' + g.NUPTK + '_' + tdy.replace(/-/g, '') + '_' + jam.replace(/:/g, '') + '_' + kat.kode + '.jpg', 'image/jpeg', d.foto).getId();
+  }
+  var row, pesan;
+  if (jenis === 'masuk') {
+    if (ada && ada.jam_masuk) return fail_('Anda sudah presensi masuk pukul ' + String(ada.jam_masuk).substring(0, 5) + ' (' + (pegKategoriDariStatus_(ada.status) || {}).label + ').', { code: 'DUPLICATE', row: prgRingkas_(ada) });
+    if (kat.ket && ket.length < 5) return fail_('Isi keterangan ' + kat.label + ' (tujuan / nama kegiatan / tempat).', { code: 'KET' });
+    if (selfieWajib && !fotoId) return fail_('Presensi ' + kat.label + ' wajib menyertakan foto selfie.', { code: 'SELFIE' });
+    var telat = kat.geofence && jam.substring(0, 5) > setting_('JAM_MASUK_GURU', '07:00') ? 'YA' : 'TIDAK';
+    row = { user_id: ctx.session.uid, NUPTK: g.NUPTK, nama: g.nama_lengkap, tanggal: tdy, jam_masuk: jam, jam_pulang: '', status: kat.status, lokasi_id: lok.lokasi_id, latitude: d.lat, longitude: d.lng,
+      jarak_m: lok.jarak, foto_id: fotoId, terlambat: telat, device_id: ctx.dev || '', keterangan: (kat.kode === 'WFO' ? '' : kat.label + ': ') + ket, diperbarui_pada: nowIso_() };
+    if (ada) { row.presensi_id = ada.presensi_id; DB.updateBatch('PresensiGuru', 'presensi_id', [row]); }
+    else { row.presensi_id = reserveIds_('PresensiGuru', 1)[0]; DB.appendBatch('PresensiGuru', [row]); }
+    if (d.surat && d.surat.data) {
+      var sb = pegSimpanBukti_(ctx, d.surat, 'surat_tugas', row.presensi_id, g.NUPTK, tdy);
+      if (sb.err) return fail_('Presensi belum disimpan: ' + sb.err);
+    }
+    pesan = 'Presensi masuk ' + kat.label + ' tercatat pukul ' + jam.substring(0, 5) + (telat === 'YA' ? ' (terlambat)' : '') + (kat.geofence ? ' di ' + lok.nama : '') + '.';
+  } else {
+    if (!ada || !ada.jam_masuk) return fail_('Belum ada presensi masuk hari ini.');
+    if (ada.jam_pulang) return fail_('Anda sudah presensi pulang pukul ' + String(ada.jam_pulang).substring(0, 5) + '.', { code: 'DUPLICATE', row: prgRingkas_(ada) });
+    var awal = jam.substring(0, 5) < setting_('JAM_PULANG_GURU', '15:00');
+    if (awal && !ket) return fail_('Presensi pulang dibuka pukul ' + setting_('JAM_PULANG_GURU', '15:00') + '. Untuk pulang lebih awal, isi alasan.', { code: 'EARLY' });
+    var ketBaru = awal ? (String(ada.keterangan || '') ? ada.keterangan + ' • ' : '') + 'Pulang awal: ' + ket.substring(0, 160) : ada.keterangan;
+    DB.updateBatch('PresensiGuru', 'presensi_id', [{ presensi_id: ada.presensi_id, jam_pulang: jam, keterangan: ketBaru, diperbarui_pada: nowIso_() }]);
+    row = Object.assign({}, ada, { jam_pulang: jam, keterangan: ketBaru });
+    pesan = 'Presensi pulang tercatat pukul ' + jam.substring(0, 5) + '. Terima kasih!';
+  }
+  var baru = semua.filter(function (p) { return p.presensi_id !== row.presensi_id; }).concat([row]);
+  prgSegarkan_(baru);
+  return ok_({ row: prgRingkas_(row), kategori: kat.kode, lokasi: lok.nama, jarak: lok.jarak, perangkatBaru: !!dev.baru }, pesan);
+}
+
+/** presensi.saya (ganti) — bentuk respons sama dengan v3.2 + kategori; dari indeks (0 baca sheet) */
+function apiPresensiSayaV33(ctx, d) {
+  var dari = d.dari || pegTambahHari_(today_(), -60), idx = prgIdx_();
+  var rows = prgRiwayat_(ctx.session.uid).filter(function (p) { return String(p.tanggal) >= dari; });
+  if (d.dari && d.dari < pegTambahHari_(today_(), -PEG_HARI_INDEKS)) rows = DB.all('PresensiGuru').filter(function (p) { return p.user_id === ctx.session.uid && String(p.tanggal) >= dari; }).map(prgRingkas_)
+    .sort(function (a, b) { return String(b.tanggal).localeCompare(String(a.tanggal)); });
+  var bln = today_().substring(0, 7), ini = rows.filter(function (p) { return String(p.tanggal).substring(0, 7) === bln; });
+  var hadir = ini.filter(function (p) { return p.jam_masuk; }), kat = {};
+  Object.keys(PEG_KATEGORI).forEach(function (k) { kat[k] = 0; }); PEG_TIDAK.forEach(function (k) { kat[k] = 0; });
+  ini.forEach(function (p) { var k = PEG_HADIR[p.status || 'Hadir']; if (k && p.jam_masuk) kat[k]++; else if (kat[p.status] !== undefined) kat[p.status]++; });
+  return ok_({ rows: rows, hariIni: idx.hariIni[ctx.session.uid] || null,
+    ringkas: { hadir: hadir.length, terlambat: hadir.filter(function (p) { return p.terlambat === 'YA'; }).length, pulangAwal: ini.filter(function (p) { return /Pulang awal/.test(p.keterangan); }).length, kategori: kat },
+    jamMasuk: setting_('JAM_MASUK_GURU', '07:00'), jamPulang: setting_('JAM_PULANG_GURU', '15:00'), selfie: setting_('PRESENSI_GURU_SELFIE', 'TIDAK') === 'YA' });
+}
+
+/** pegawai.ringkas — bahan halaman Presensi (pop-up 9 menu) dalam 1 panggilan */
+function apiPegawaiRingkas(ctx, d) {
+  var g = guruDariCtx_(ctx); if (!g) return fail_('Akun Anda belum terhubung ke data guru/pegawai (NUPTK).');
+  var uid = ctx.session.uid, idx = prgIdx_(), izin = pegIzinIdx_(), ak = pegAktIdx_(), bln = today_().substring(0, 7);
+  var mine = (izin.byUid[uid] || []);
+  var rowsBln = prgRiwayat_(uid).filter(function (p) { return String(p.tanggal).substring(0, 7) === bln; });
+  var kat = {}; Object.keys(PEG_KATEGORI).forEach(function (k) { kat[k] = 0; }); PEG_TIDAK.forEach(function (k) { kat[k] = 0; });
+  rowsBln.forEach(function (p) { var k = PEG_HADIR[p.status || 'Hadir']; if (k && p.jam_masuk) kat[k]++; else if (kat[p.status] !== undefined) kat[p.status]++; });
+  return ok_({
+    kategori: Object.keys(PEG_KATEGORI).map(function (k) { var x = PEG_KATEGORI[k]; return { kode: x.kode, label: x.label, geofence: x.geofence, ket: x.ket, info: x.info }; }),
+    hariIni: idx.hariIni[uid] || null, bulanIni: kat, hariKerjaBulanIni: rowsBln.filter(function (p) { return p.jam_masuk; }).length,
+    izinMenunggu: mine.filter(function (x) { return x.status === 'Menunggu'; }).length, izinTerakhir: mine.slice(0, 3),
+    aktivitasHariIni: (ak.byUid[uid] || []).filter(function (a) { return String(a.tanggal) === today_(); }).length,
+    profil: { NUPTK: String(g.NUPTK), nama: g.nama_lengkap, email: g.email, no_wa: g.no_wa, jabatan: g.jabatan, mata_pelajaran: g.mata_pelajaran, foto: g.foto_profil_url, status: g.status || 'Aktif' },
+    jamMasuk: setting_('JAM_MASUK_GURU', '07:00'), jamPulang: setting_('JAM_PULANG_GURU', '15:00'), selfie: setting_('PRESENSI_GURU_SELFIE', 'TIDAK') === 'YA'
+  });
+}
+
+/** presensi.manual — Super Admin mencatat presensi guru yang lupa absen. d: { NUPTK, tanggal, kategori, jam_masuk, jam_pulang, alasan } */
+function apiPresensiManual(ctx, d) {
+  var g = DB.find('Guru', 'NUPTK', String(d.NUPTK || ''));
+  if (!g) return fail_('Guru/pegawai tidak ditemukan.');
+  var tgl = String(d.tanggal || today_());
+  if (!pegTglOk_(tgl) || tgl > today_()) return fail_('Tanggal tidak valid (tidak boleh tanggal yang akan datang).');
+  var kat = pegKategori_(d.kategori || 'WFO'); if (!kat) return fail_('Kategori tidak dikenal.');
+  var jm = String(d.jam_masuk || setting_('JAM_MASUK_GURU', '07:00')).substring(0, 5), jp = String(d.jam_pulang || '').substring(0, 5);
+  if (!pegJamOk_(jm) || (jp && !pegJamOk_(jp))) return fail_('Format jam harus HH:mm (contoh 06:55).');
+  if (jp && jp <= jm) return fail_('Jam pulang harus setelah jam masuk.');
+  var alasan = pegTeks_(d.alasan, 160);
+  if (alasan.length < 5) return fail_('Isi alasan absen manual (mis. lupa presensi, HP rusak, sinyal GPS hilang).');
+  var uid = pegUidGuru_(g.NUPTK) || '';
+  var semua = DB.all('PresensiGuru'), ada = semua.filter(function (p) { return String(p.NUPTK) === String(g.NUPTK) && String(p.tanggal) === tgl; })[0];
+  if (ada && ada.jam_masuk && !d.timpa) return fail_(g.nama_lengkap + ' sudah presensi masuk pukul ' + String(ada.jam_masuk).substring(0, 5) + ' pada tanggal tersebut. Centang "timpa" untuk mengoreksi.', { code: 'DUPLICATE' });
+  var row = { user_id: uid || (ada && ada.user_id) || '', NUPTK: g.NUPTK, nama: g.nama_lengkap, tanggal: tgl, jam_masuk: jm + ':00', jam_pulang: jp ? jp + ':00' : '', status: kat.status, lokasi_id: 'MANUAL',
+    latitude: '', longitude: '', jarak_m: '', foto_id: '', terlambat: kat.geofence && jm > setting_('JAM_MASUK_GURU', '07:00') ? 'YA' : 'TIDAK', device_id: 'MANUAL',
+    keterangan: 'Manual oleh Super Admin (' + (ctx.user && ctx.user.n || ctx.session.email) + '): ' + alasan, diperbarui_pada: nowIso_() };
+  if (ada) { row.presensi_id = ada.presensi_id; DB.updateBatch('PresensiGuru', 'presensi_id', [row]); }
+  else { row.presensi_id = reserveIds_('PresensiGuru', 1)[0]; DB.appendBatch('PresensiGuru', [row]); }
+  prgSegarkan_(semua.filter(function (p) { return p.presensi_id !== row.presensi_id; }).concat([row]));
+  if (uid) notifApp_([{ user_id: uid, judul: 'Presensi dicatat Super Admin', pesan: 'Presensi ' + kat.label + ' ' + tanggalIndo_(tgl) + ' pukul ' + jm + (jp ? '–' + jp : '') + ' dicatat manual: ' + alasan, tipe: 'info', link: '#/presensi/riwayat' }]);
+  var res = ok_({ row: prgRingkas_(row) }, 'Presensi ' + g.nama_lengkap + ' (' + tanggalIndo_(tgl) + ') dicatat manual.');
+  res.auditDetail = 'manual ' + g.NUPTK + ' ' + tgl + ' ' + kat.kode + ' ' + jm + (jp ? '-' + jp : '');
+  return res;
+}
+
+// ---------------------------------------------------------------------
+// 4. TIDAK HADIR (Sakit / Izin / Cuti) + PERSETUJUAN SUPER ADMIN
+// ---------------------------------------------------------------------
+function pegIzinIdx_() {
+  return cached_('iznIdx_' + ver_('izinPeg'), 21600, function () {
+    var byUid = {}, menunggu = 0;
+    DB.all('IzinPegawai').forEach(function (x) { (byUid[x.user_id] = byUid[x.user_id] || []).push(x); if (x.status === 'Menunggu') menunggu++; });
+    Object.keys(byUid).forEach(function (u) { byUid[u].sort(function (a, b) { return String(b.dibuat_pada).localeCompare(String(a.dibuat_pada)); }); });
+    return { byUid: byUid, menunggu: menunggu };
+  });
+}
+function pegHariIzin_(dari, sampai) {
+  var out = [], t = dari, n = 0;
+  while (t <= sampai && n < 62) { if (pegHari_(t) !== 'Minggu') out.push(t); t = pegTambahHari_(t, 1); n++; }
+  return out;
+}
+/** izin.ajukan — d: { jenis, dari, sampai, alasan, bukti:{name,mime,data} } */
+function apiIzinAjukan(ctx, d) {
+  var g = guruDariCtx_(ctx); if (!g) return fail_('Akun Anda belum terhubung ke data guru/pegawai.');
+  var jenis = PEG_TIDAK.indexOf(d.jenis) > -1 ? d.jenis : '';
+  if (!jenis) return fail_('Pilih jenis: Sakit, Izin, atau Cuti.');
+  var dari = String(d.dari || ''), sampai = String(d.sampai || d.dari || '');
+  if (!pegTglOk_(dari) || !pegTglOk_(sampai) || sampai < dari) return fail_('Tanggal tidak valid.');
+  if (dari < pegTambahHari_(today_(), -30)) return fail_('Pengajuan paling lambat 30 hari setelah tanggal tidak hadir.');
+  var hari = pegHariIzin_(dari, sampai);
+  if (!hari.length) return fail_('Rentang tanggal hanya berisi hari Minggu.');
+  if (pegTambahHari_(dari, 61) < sampai) return fail_('Maksimal 62 hari per pengajuan.');
+  var alasan = pegTeks_(d.alasan, 300); if (alasan.length < 5) return fail_('Tuliskan alasan / keterangan.');
+  if (!d.bukti || !d.bukti.data) return fail_('Wajib unggah bukti: surat keterangan dokter (sakit) atau surat keterangan resmi (izin/cuti).', { code: 'BUKTI' });
+  var bentrok = (pegIzinIdx_().byUid[ctx.session.uid] || []).filter(function (x) { return (x.status === 'Menunggu' || x.status === 'Disetujui') && !(x.tanggal_selesai < dari || x.tanggal_mulai > sampai); })[0];
+  if (bentrok) return fail_('Sudah ada pengajuan ' + bentrok.jenis + ' (' + bentrok.status + ') untuk tanggal yang beririsan.');
+  var id = reserveIds_('IzinPegawai', 1)[0];
+  var sb = pegSimpanBukti_(ctx, d.bukti, 'suket_guru', id, g.NUPTK, dari);
+  if (sb.err) return fail_(sb.err);
+  var row = { izin_id: id, user_id: ctx.session.uid, NUPTK: g.NUPTK, nama: g.nama_lengkap, jenis: jenis, tanggal_mulai: dari, tanggal_selesai: sampai, jumlah_hari: hari.length, alasan: alasan,
+    bukti_id: sb.row.bukti_id, status: 'Menunggu', diputuskan_oleh: '', diputuskan_pada: '', catatan_putusan: '', dibuat_pada: nowIso_(), diperbarui_pada: nowIso_() };
+  DB.appendBatch('IzinPegawai', [row]);
+  bump_('izinPeg', true);
+  var sa = Object.keys(userIdx_()).filter(function (u) { var x = userIdx_()[u]; return x.r === 'superadmin' && x.a; });
+  notifApp_(sa.map(function (u) { return { user_id: u, judul: 'Pengajuan ' + jenis + ' menunggu persetujuan', pesan: g.nama_lengkap + ': ' + tanggalIndo_(dari) + (sampai !== dari ? ' – ' + tanggalIndo_(sampai) : '') + ' (' + hari.length + ' hari)', tipe: 'warning', link: '#/kepegawaian/izin' }; }));
+  var res = ok_({ izin: row }, 'Pengajuan ' + jenis + ' terkirim dan menunggu persetujuan Super Admin.');
+  res.auditDetail = 'ajukan ' + id + ' ' + jenis + ' ' + dari + '..' + sampai;
+  return res;
+}
+function apiIzinSaya(ctx, d) {
+  return ok_({ rows: (pegIzinIdx_().byUid[ctx.session.uid] || []).slice(0, 60) });
+}
+function apiIzinBatal(ctx, d) {
+  var x = DB.find('IzinPegawai', 'izin_id', String(d.izin_id || ''));
+  if (!x || x.user_id !== ctx.session.uid) return fail_('Pengajuan tidak ditemukan.');
+  if (x.status !== 'Menunggu') return fail_('Hanya pengajuan yang masih menunggu yang bisa dibatalkan.');
+  DB.updateBatch('IzinPegawai', 'izin_id', [{ izin_id: x.izin_id, status: 'Dibatalkan', diperbarui_pada: nowIso_() }]);
+  bump_('izinPeg', true);
+  return ok_(null, 'Pengajuan dibatalkan.');
+}
+/** izin.list (Super Admin) — d: { status?, dari?, sampai?, NUPTK? } */
+function apiIzinList(ctx, d) {
+  var rows = DB.all('IzinPegawai').filter(function (x) {
+    if (d.status && x.status !== d.status) return false;
+    if (d.NUPTK && String(x.NUPTK) !== String(d.NUPTK)) return false;
+    if (d.dari && String(x.tanggal_selesai) < d.dari) return false;
+    if (d.sampai && String(x.tanggal_mulai) > d.sampai) return false;
+    return true;
+  }).sort(function (a, b) { return (a.status === 'Menunggu' ? 0 : 1) - (b.status === 'Menunggu' ? 0 : 1) || String(b.dibuat_pada).localeCompare(String(a.dibuat_pada)); });
+  var c = { Menunggu: 0, Disetujui: 0, Ditolak: 0, Dibatalkan: 0 };
+  DB.all('IzinPegawai').forEach(function (x) { if (c[x.status] !== undefined) c[x.status]++; });
+  return ok_({ rows: rows.slice(0, 500), hitung: c });
+}
+/** izin.putus (Super Admin) — d: { izin_id, keputusan: setujui|tolak|batalkan, catatan } */
+function apiIzinPutus(ctx, d) {
+  var x = DB.find('IzinPegawai', 'izin_id', String(d.izin_id || ''));
+  if (!x) return fail_('Pengajuan tidak ditemukan.');
+  var k = d.keputusan, catatan = pegTeks_(d.catatan, 200), now = nowIso_();
+  if (k === 'setujui' || k === 'tolak') { if (x.status !== 'Menunggu') return fail_('Pengajuan ini sudah ' + x.status.toLowerCase() + '.'); }
+  else if (k === 'batalkan') { if (x.status !== 'Disetujui') return fail_('Hanya pengajuan yang sudah disetujui yang bisa dibatalkan.'); }
+  else return fail_('Keputusan tidak dikenal.');
+  if (k === 'tolak' && catatan.length < 3) return fail_('Tuliskan alasan penolakan.');
+  var status = k === 'setujui' ? 'Disetujui' : k === 'tolak' ? 'Ditolak' : 'Dibatalkan';
+  DB.updateBatch('IzinPegawai', 'izin_id', [{ izin_id: x.izin_id, status: status, diputuskan_oleh: ctx.session.email, diputuskan_pada: now, catatan_putusan: catatan, diperbarui_pada: now }]);
+  var semua = DB.all('PresensiGuru'), tanda = '[' + x.izin_id + ']', n = 0;
+  if (k === 'setujui') {
+    var per = {}; semua.forEach(function (p) { if (String(p.NUPTK) === String(x.NUPTK)) per[String(p.tanggal)] = p; });
+    var ins = [], upd = [];
+    pegHariIzin_(String(x.tanggal_mulai), String(x.tanggal_selesai)).forEach(function (t) {
+      var ada = per[t];
+      if (ada && ada.jam_masuk) return;                          // sudah hadir di tanggal itu → tidak ditimpa
+      var r = { user_id: x.user_id, NUPTK: x.NUPTK, nama: x.nama, tanggal: t, jam_masuk: '', jam_pulang: '', status: x.jenis, lokasi_id: '', latitude: '', longitude: '', jarak_m: '', foto_id: '',
+        terlambat: '', device_id: '', keterangan: x.jenis + ' disetujui ' + tanda + ': ' + String(x.alasan).substring(0, 100), diperbarui_pada: now };
+      if (ada) { r.presensi_id = ada.presensi_id; upd.push(r); } else ins.push(r);
+    });
+    var ids = reserveIds_('PresensiGuru', ins.length); ins.forEach(function (r, i) { r.presensi_id = ids[i]; });
+    DB.appendBatch('PresensiGuru', ins); DB.updateBatch('PresensiGuru', 'presensi_id', upd); n = ins.length + upd.length;
+    var ganti = {}; upd.forEach(function (r) { ganti[r.presensi_id] = r; });
+    semua = semua.map(function (p) { return ganti[p.presensi_id] || p; }).concat(ins);
+  } else if (k === 'batalkan') {
+    var hapus = semua.filter(function (p) { return !p.jam_masuk && String(p.keterangan || '').indexOf(tanda) > -1; }).map(function (p) { return p.presensi_id; });
+    if (hapus.length) { DB.deleteWhere('PresensiGuru', 'presensi_id', hapus); var hs = {}; hapus.forEach(function (h) { hs[h] = 1; }); semua = semua.filter(function (p) { return !hs[p.presensi_id]; }); }
+    n = hapus.length;
+  }
+  if (k !== 'tolak') prgSegarkan_(semua);
+  bump_('izinPeg', true);
+  notifApp_([{ user_id: x.user_id, judul: 'Pengajuan ' + x.jenis + ' ' + status.toLowerCase(), pesan: tanggalIndo_(x.tanggal_mulai) + (x.tanggal_selesai !== x.tanggal_mulai ? ' – ' + tanggalIndo_(x.tanggal_selesai) : '') + (catatan ? ' • Catatan: ' + catatan : ''), tipe: k === 'setujui' ? 'success' : 'warning', link: '#/presensi/izin' }]);
+  var res = ok_({ status: status, hari: n }, 'Pengajuan ' + x.jenis + ' ' + x.nama + ' ' + status.toLowerCase() + '.' + (k === 'setujui' ? ' ' + n + ' hari tercatat di presensi.' : ''));
+  res.auditDetail = k + ' ' + x.izin_id + ' ' + x.NUPTK;
+  return res;
+}
+
+// ---------------------------------------------------------------------
+// 5. AKTIVITAS HARIAN PEGAWAI
+// ---------------------------------------------------------------------
+function pegAktIdx_() {
+  return cached_('akpIdx_' + ver_('aktPeg'), 21600, function () {
+    var byUid = {}, batas = pegTambahHari_(today_(), -120);
+    DB.all('AktivitasPegawai').forEach(function (a) { if (String(a.tanggal) >= batas) (byUid[a.user_id] = byUid[a.user_id] || []).push(a); });
+    Object.keys(byUid).forEach(function (u) { byUid[u].sort(function (a, b) { return String(b.tanggal + b.jam_mulai).localeCompare(String(a.tanggal + a.jam_mulai)); }); });
+    return { byUid: byUid };
+  });
+}
+/** aktivitas.saya — d: { bulan: 'yyyy-MM' } */
+function apiAktivitasSaya(ctx, d) {
+  var bln = /^\d{4}-\d{2}$/.test(String(d.bulan || '')) ? d.bulan : today_().substring(0, 7);
+  var rows = (pegAktIdx_().byUid[ctx.session.uid] || []).filter(function (a) { return String(a.tanggal).substring(0, 7) === bln; });
+  if (bln < pegTambahHari_(today_(), -120).substring(0, 7)) rows = DB.all('AktivitasPegawai').filter(function (a) { return a.user_id === ctx.session.uid && String(a.tanggal).substring(0, 7) === bln; });
+  return ok_({ bulan: bln, rows: rows });
+}
+/** aktivitas.simpan — d: { aktivitas_id?, tanggal, jam_mulai, jam_selesai, kegiatan, uraian, hasil, lampiran:{...} } */
+function apiAktivitasSimpan(ctx, d) {
+  var g = guruDariCtx_(ctx); if (!g) return fail_('Akun Anda belum terhubung ke data guru/pegawai.');
+  var tgl = String(d.tanggal || today_());
+  if (!pegTglOk_(tgl) || tgl > today_()) return fail_('Tanggal tidak valid (tidak boleh tanggal yang akan datang).');
+  if (tgl < pegTambahHari_(today_(), -30)) return fail_('Aktivitas hanya bisa dicatat/diubah maksimal 30 hari ke belakang.');
+  var jm = String(d.jam_mulai || '').substring(0, 5), js = String(d.jam_selesai || '').substring(0, 5);
+  if ((jm && !pegJamOk_(jm)) || (js && !pegJamOk_(js))) return fail_('Format jam harus HH:mm.');
+  if (jm && js && js <= jm) return fail_('Jam selesai harus setelah jam mulai.');
+  var keg = pegTeks_(d.kegiatan, 120); if (keg.length < 3) return fail_('Isi nama kegiatan.');
+  var lama = d.aktivitas_id ? DB.find('AktivitasPegawai', 'aktivitas_id', String(d.aktivitas_id)) : null;
+  if (d.aktivitas_id && (!lama || lama.user_id !== ctx.session.uid)) return fail_('Aktivitas tidak ditemukan.');
+  var row = { user_id: ctx.session.uid, NUPTK: g.NUPTK, nama: g.nama_lengkap, tanggal: tgl, jam_mulai: jm, jam_selesai: js, kegiatan: keg, uraian: pegTeks_(d.uraian, 1000), hasil: pegTeks_(d.hasil, 300), diperbarui_pada: nowIso_() };
+  if (lama) { row.aktivitas_id = lama.aktivitas_id; row.lampiran_id = lama.lampiran_id; }
+  else { row.aktivitas_id = reserveIds_('AktivitasPegawai', 1)[0]; row.dibuat_pada = nowIso_(); row.lampiran_id = ''; }
+  if (d.lampiran && d.lampiran.data) { var sb = pegSimpanBukti_(ctx, d.lampiran, 'aktivitas', row.aktivitas_id, g.NUPTK, tgl); if (sb.err) return fail_(sb.err); row.lampiran_id = sb.row.bukti_id; }
+  if (lama) DB.updateBatch('AktivitasPegawai', 'aktivitas_id', [row]); else DB.appendBatch('AktivitasPegawai', [row]);
+  bump_('aktPeg', true);
+  return ok_({ row: row }, lama ? 'Aktivitas diperbarui.' : 'Aktivitas tercatat.');
+}
+function apiAktivitasHapus(ctx, d) {
+  var a = DB.find('AktivitasPegawai', 'aktivitas_id', String(d.aktivitas_id || ''));
+  if (!a || (a.user_id !== ctx.session.uid && !isSA_(ctx))) return fail_('Aktivitas tidak ditemukan.');
+  DB.deleteWhere('AktivitasPegawai', 'aktivitas_id', [a.aktivitas_id]);
+  bump_('aktPeg', true);
+  return ok_(null, 'Aktivitas dihapus.');
+}
+/** aktivitas.list (Super Admin) — d: { dari, sampai, NUPTK? } */
+function apiAktivitasList(ctx, d) {
+  var dari = pegTglOk_(d.dari) ? d.dari : pegTambahHari_(today_(), -6), sampai = pegTglOk_(d.sampai) ? d.sampai : today_();
+  var rows = DB.all('AktivitasPegawai').filter(function (a) { var t = String(a.tanggal); return t >= dari && t <= sampai && (!d.NUPTK || String(a.NUPTK) === String(d.NUPTK)); })
+    .sort(function (a, b) { return String(b.tanggal + b.jam_mulai).localeCompare(String(a.tanggal + a.jam_mulai)); });
+  return ok_({ rows: rows.slice(0, 2000), dari: dari, sampai: sampai });
+}
+
+// ---------------------------------------------------------------------
+// 6. PROFIL PEGAWAI & BUKTI
+// ---------------------------------------------------------------------
+/** pegawai.profil.simpan — pegawai memperbarui No. WhatsApp-nya sendiri */
+function apiPegawaiProfilSimpan(ctx, d) {
+  var g = guruDariCtx_(ctx); if (!g) return fail_('Akun Anda belum terhubung ke data guru/pegawai.');
+  var wa = String(d.no_wa || '').trim();
+  if (wa && !hpValid_(wa)) return fail_('Nomor WhatsApp tidak valid (contoh: 0812xxxxxxx).');
+  DB.updateBatch('Guru', 'NUPTK', [{ NUPTK: g.NUPTK, no_wa: hp08_(wa) }]);
+  bump_('master');
+  return ok_({ no_wa: hp08_(wa) }, 'Profil diperbarui.');
+}
+/** bukti.lihat — isi berkas bukti (base64) untuk pemilik / Super Admin / guru (suket siswa) */
+function apiBuktiLihat(ctx, d) {
+  var b = DB.find('BuktiKehadiran', 'bukti_id', String(d.bukti_id || ''));
+  if (!b) return fail_('Berkas tidak ditemukan.');
+  var sa = isSA_(ctx), boleh = sa || b.diunggah_oleh === ctx.session.uid || (ctx.session.ref && String(b.pemilik) === String(ctx.session.ref)) || (b.jenis === 'suket_siswa' && ctx.session.role === 'guru');
+  if (!boleh) return fail_('Anda tidak berhak membuka berkas ini.', { code: 'FORBIDDEN' });
+  var k = 'bkt_' + b.file_id, c = CacheX.get(k);
+  if (c) return ok_(c);
+  var blob = DriveApp.getFileById(b.file_id).getBlob();
+  var out = { bukti_id: b.bukti_id, nama_file: b.nama_file, mime: b.mime, data: Utilities.base64Encode(blob.getBytes()) };
+  CacheX.put(k, out, 21600);
+  return ok_(out);
+}
+
+// ---------------------------------------------------------------------
+// 7. TAMBAHAN DATA untuk menu lama (bentuk respons lama dipertahankan, hanya ditambah field)
+// ---------------------------------------------------------------------
+function apiSaMonitorV33(ctx, d) {
+  var r = apiSaMonitor(ctx, d); if (!r || !r.success) return r;
+  var idx = prgIdx_(), per = idx.hariIniNuptk || {};
+  (r.data.guru || []).forEach(function (g) { var p = per[String(g.NUPTK)]; if (p) { g.status = p.status || 'Hadir'; g.kategori = PEG_HADIR[g.status] || ''; g.manual = p.lokasi_id === 'MANUAL'; } });
+  r.data.izinMenunggu = pegIzinIdx_().menunggu;
+  return r;
+}
+function apiPresensiListV33(ctx, d) {
+  var r = apiPresensiList(ctx, d); if (!r || !r.success) return r;
+  if (r.data.harian) {
+    var per = {}; (r.data.rows || []).forEach(function (p) { per[p.NUPTK] = p; });
+    r.data.harian.forEach(function (h) { var p = per[h.NUPTK]; h.status = p ? (p.status || 'Hadir') : ''; });
+  }
+  return r;
+}
+
+// ---------------------------------------------------------------------
+// 8. RUTE, KAIT, DATA CONTOH
+// ---------------------------------------------------------------------
+EXT.routes.push(function (add) {
+  add('pegawai.ringkas', apiPegawaiRingkas, 'gurux');
+  add('presensi.pegawai', apiPresensiPegawai, 'gurux', true);
+  add('presensi.saya', apiPresensiSayaV33, 'gurux');                       // ganti v3.2 (bentuk respons sama + kategori)
+  add('presensi.manual', apiPresensiManual, 'sa', true, { audit: true });
+  add('izin.ajukan', apiIzinAjukan, 'gurux', true, { audit: true });
+  add('izin.saya', apiIzinSaya, 'gurux');
+  add('izin.batal', apiIzinBatal, 'gurux', true);
+  add('izin.list', apiIzinList, 'sa');
+  add('izin.putus', apiIzinPutus, 'sa', true, { audit: true });
+  add('aktivitas.saya', apiAktivitasSaya, 'gurux');
+  add('aktivitas.simpan', apiAktivitasSimpan, 'gurux', true);
+  add('aktivitas.hapus', apiAktivitasHapus, 'gurux', true);
+  add('aktivitas.list', apiAktivitasList, 'sa');
+  add('pegawai.profil.simpan', apiPegawaiProfilSimpan, 'gurux', true);
+  add('bukti.lihat', apiBuktiLihat, 'any');
+  add('sa.monitor', apiSaMonitorV33, 'sa', false, { ttl: 60 });           // + kategori & izin menunggu
+  add('presensi.list', apiPresensiListV33, 'sa', false, { ttl: 120 });    // + kategori per guru
+});
+/** Presensi lewat rute lama (presensi.guru v3.2) juga membuat indeks basi — versi 'presensi' sudah dinaikkan di sana */
+(EXT.hooks.setelahTulis = EXT.hooks.setelahTulis || []).push(function (nama) {
+  if (nama === 'presensi.guru' || nama === 'guru.save' || nama === 'guru.delete') { _PRG = null; _PRG_U = {}; }
+});
+(EXT.hooks.demoClear = EXT.hooks.demoClear || []).push(function () {
+  ['IzinPegawai', 'AktivitasPegawai', 'BuktiKehadiran'].forEach(function (n) { var sh = getSheet_(n), last = sh.getLastRow(); if (last > 1) sh.getRange(2, 1, last - 1, sh.getLastColumn()).clearContent(); invalidateRows_(n); });
+  bump_('izinPeg'); bump_('aktPeg'); bump_('presensi');
+});
+(EXT.hooks.warm = EXT.hooks.warm || []).push(function (step, scope) {
+  if (scope === 'pub') return;
+  step('presensiIdx', function () { prgIdx_(); });
+});
+/**
+ * UPDATE KE v3.3 — jalankan SEKALI dari editor (opsional, aman diulang).
+ * Membuat sheet IzinPegawai, AktivitasPegawai, BuktiKehadiran, kolom a5/a6 di RatingGuru, baris pengaturan baru,
+ * dan folder privat SIAKAD_BUKTI_KEHADIRAN. Tidak mengubah data yang sudah ada.
+ */
+function setupV33() {
+  resetMemo_();
+  if (!prop_('SPREADSHEET_ID')) { Logger.log('⚠️ Belum ada setup. Jalankan setupAppEnvironment() dulu.'); return; }
+  Logger.log('🔧 Update ke v3.3 (Presensi Pegawai, Izin + suket, Aktivitas, Leaderboard, Rating aspek, Turbo) ...');
+  upgradeSchema(true);
+  try { pegFolder_(); } catch (e) { Logger.log('⚠️ Folder bukti: ' + e.message); }
+  if (prop_('DEMO_SEEDED') === '1' && typeof seedDemoV33_ === 'function') { seedDemoV33_(); Logger.log('+ data contoh presensi pegawai, izin & aktivitas (server demo)'); }
+  bump_('presensi'); bump_('izinPeg'); bump_('aktPeg'); bump_('lb');
+  try { Logger.log('🔥 Warmup: ' + warmCaches_('setup')); } catch (e) { Logger.log('⚠️ Warmup: ' + e.message); }
+  setProp_('V33_SIAP', '3.3.0');
+  Logger.log('✅ Selesai. Lanjutkan: Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.');
+}
+if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasangEkstensi_();
+
+;
+// ==== Fitur33.gs ====
+/**
+ * =====================================================================
+ *  SIAKAD SISWA v3.3 — Fitur33.gs
+ *  - Hapus akun massal (akun login saja; data siswa/guru, nilai, absensi tetap)
+ *  - Surat keterangan (suket) untuk absensi manual siswa Izin/Sakit
+ *  - Leaderboard siswa: tercepat menyelesaikan tugas/kuis LMS & rata-rata nilai tertinggi
+ *  - Kriteria "Perlu Pendampingan" bisa diatur Super Admin
+ *  - Turbo: absensi.list membaca hanya baris dalam rentang tanggal (bukan seluruh sheet)
+ *  Sheet baru: tidak ada (berkas suket memakai BuktiKehadiran dari Kepegawaian.gs).
+ * =====================================================================
+ */
+var EXT = (typeof EXT !== 'undefined' && EXT) || { schema: {}, seed: [], routes: [], tick: [], reset: [], hooks: {} };
+EXT.seed.push(['PDP_BATAS_NILAI', '', 'Pendampingan: batas nilai akhir (kosong = KKM)']);
+EXT.seed.push(['PDP_DASAR', 'rata', 'Pendampingan: rata = rata-rata nilai semua mapel; mapel = jumlah mapel di bawah batas']);
+EXT.seed.push(['PDP_MIN_MAPEL', '1', 'Pendampingan: minimal jumlah mapel di bawah batas (bila dasar = mapel)']);
+EXT.seed.push(['PDP_ATURAN', 'ATAU', 'Pendampingan: ATAU = salah satu syarat; DAN = kehadiran DAN nilai']);
+EXT.seed.push(['LB_MIN_TUGAS', '3', 'Leaderboard: minimal tugas/kuis tepat waktu agar masuk peringkat tercepat']);
+
+// ---------------------------------------------------------------------
+// 1. HAPUS AKUN MASSAL (Kelola Akun) — akun login saja
+// ---------------------------------------------------------------------
+function apiSaAkunBulkV33(ctx, d) {
+  if (d.aksi !== 'hapus') return apiSaAkunBulk(ctx, d);
+  var ids = [].concat(d.ids || []).map(String).filter(String);
+  if (!ids.length) return fail_('Belum ada akun yang dipilih.');
+  if (ids.length > 1000) return fail_('Maksimal 1.000 akun sekali hapus.');
+  if (ids.indexOf(ctx.session.uid) > -1) return fail_('Akun Anda sendiri ikut terpilih — hapus centangnya dulu.');
+  var set = {}; ids.forEach(function (x) { set[x] = 1; });
+  var users = DB.all('Users').filter(function (u) { return set[u.user_id]; });
+  if (!users.length) return fail_('Akun tidak ditemukan (mungkin sudah dihapus).');
+  var saKena = users.filter(function (u) { return u.role === 'superadmin'; }).map(function (u) { return u.user_id; });
+  if (saKena.length && !saAktifLain_(saKena)) return fail_('Minimal harus ada satu Super Admin aktif.');
+  var n = DB.deleteWhere('Users', 'user_id', users.map(function (u) { return u.user_id; }));
+  bump_('master');
+  var per = { superadmin: 0, guru: 0, siswa: 0 }; users.forEach(function (u) { if (per[u.role] !== undefined) per[u.role]++; });
+  var res = ok_({ n: n, per: per }, n + ' akun dihapus. Data siswa/guru, nilai, dan absensi tetap tersimpan.');
+  res.auditDetail = 'hapus ' + n + ' akun (' + per.siswa + ' siswa, ' + per.guru + ' guru, ' + per.superadmin + ' SA)';
+  return res;
+}
+
+// ---------------------------------------------------------------------
+// 2. SUKET ABSENSI SISWA (Izin / Sakit) — diunggah guru di Input Manual
+// ---------------------------------------------------------------------
+/** absensi.suket — d: { NIS, tanggal, berkas:{name,mime,data} } */
+function apiAbsenSuket(ctx, d) {
+  var nis = String(d.NIS || ''), tgl = String(d.tanggal || today_());
+  var a = DB.all('Absensi').filter(function (x) { return String(x.NIS) === nis && String(x.tanggal) === tgl; })[0];
+  if (!a) return fail_('Simpan absensi siswa ini dulu, lalu unggah surat keterangannya.');
+  if (a.status !== 'Izin' && a.status !== 'Sakit') return fail_('Surat keterangan hanya untuk status Izin atau Sakit.');
+  var sb = pegSimpanBukti_(ctx, d.berkas, 'suket_siswa', a.absensi_id, nis, tgl);
+  if (sb.err) return fail_(sb.err);
+  bump_('suketSis', true);
+  var res = ok_({ bukti: { bukti_id: sb.row.bukti_id, nama_file: sb.row.nama_file, NIS: nis, tanggal: tgl } }, 'Surat keterangan tersimpan.');
+  res.auditDetail = 'suket ' + nis + ' ' + tgl;
+  return res;
+}
+/** absensi.suketList — d: { tanggal } → { NIS: {bukti_id, nama_file} } (terbaru per siswa) */
+function apiAbsenSuketList(ctx, d) {
+  var tgl = String(d.tanggal || today_());
+  var idx = cached_('sukS_' + ver_('suketSis'), 21600, function () {
+    var o = {}; DB.all('BuktiKehadiran').forEach(function (b) { if (b.jenis === 'suket_siswa') { var t = o[b.tanggal] = o[b.tanggal] || {}; t[b.pemilik] = { bukti_id: b.bukti_id, nama_file: b.nama_file, mime: b.mime }; } });
+    return o;
+  });
+  return ok_({ tanggal: tgl, suket: idx[tgl] || {} });
+}
+
+// ---------------------------------------------------------------------
+// 3. LEADERBOARD SISWA
+// ---------------------------------------------------------------------
+function lbData_() {
+  var ta = setting_('TAHUN_AJARAN', ''), sem = setting_('SEMESTER', ''), mulai = String(setting_('SEMESTER_MULAI', '2000-01-01')).substring(0, 10);
+  return cached_('lb_' + hashKecil_(ta + '|' + sem) + '_' + ver_('nilai') + '_' + ver_('lb') + '_' + ver_('master'), 600, function () {
+    var uidNis = {}; DB.all('Users').forEach(function (u) { if (u.role === 'siswa') uidNis[u.user_id] = String(u.ref_id); });
+    var cepat = {};
+    var catat = function (uid, detik) { var nis = uidNis[uid]; if (!nis || !(detik > 0)) return; var x = cepat[nis] = cepat[nis] || { n: 0, total: 0 }; x.n++; x.total += detik; };
+    if (SCHEMA.TugasKirim) DB.all('TugasKirim').forEach(function (t) {
+      if ((t.status === 'terkirim' || t.status === 'dinilai') && t.terlambat !== 'YA' && String(t.dikirim_pada).substring(0, 10) >= mulai) catat(t.user_id, num_(t.durasi_detik, 0));
+    });
+    if (SCHEMA.KuisPercobaan) {
+      var pertama = {};
+      DB.all('KuisPercobaan').forEach(function (p) {
+        if (!p.selesai || p.terlambat === 'YA' || String(p.selesai).substring(0, 10) < mulai) return;
+        var k = p.user_id + '|' + p.modul_id; if (!pertama[k] || num_(p.no, 1) < num_(pertama[k].no, 1)) pertama[k] = p;
+      });
+      Object.keys(pertama).forEach(function (k) { catat(pertama[k].user_id, num_(pertama[k].durasi_detik, 0)); });
+    }
+    var nilai = {};
+    DB.all('Nilai').forEach(function (n) {
+      if (String(n.tahun_ajaran) !== ta || String(n.semester) !== sem || n.nilai_akhir === '' || n.nilai_akhir === null) return;
+      var x = nilai[n.NIS] = nilai[n.NIS] || { n: 0, total: 0 }; x.n++; x.total += num_(n.nilai_akhir);
+    });
+    var siswa = {}, kelasNis = {}; DB.all('Siswa').forEach(function (s) { kelasNis[String(s.NIS)] = s.kelas_id; if ((s.status || 'Aktif') === 'Aktif') siswa[s.NIS] = { NIS: String(s.NIS), nama: s.nama_lengkap, kelas_id: s.kelas_id, foto: s.foto_profil_url || '' }; });
+    var km = {}; DB.all('Kelas').forEach(function (k) { km[k.kelas_id] = k.nama_kelas; });
+    var minT = Math.max(1, num_(setting_('LB_MIN_TUGAS', 3), 3));
+    var tercepat = Object.keys(cepat).filter(function (k) { return siswa[k] && cepat[k].n >= minT; })
+      .map(function (k) { return Object.assign({ jumlah: cepat[k].n, rata_detik: Math.round(cepat[k].total / cepat[k].n) }, siswa[k]); })
+      .sort(function (a, b) { return a.rata_detik - b.rata_detik || b.jumlah - a.jumlah; });
+    var rata = Object.keys(nilai).filter(function (k) { return siswa[k]; })
+      .map(function (k) { return Object.assign({ jumlah: nilai[k].n, rata: round1_(nilai[k].total / nilai[k].n) }, siswa[k]); })
+      .sort(function (a, b) { return b.rata - a.rata || b.jumlah - a.jumlah; });
+    return { tercepat: tercepat, rata: rata, minTugas: minT, periode: { ta: ta, sem: sem, mulai: mulai }, kelasNis: kelasNis, km: km };
+  });
+}
+/** leaderboard — d: { cakupan: kelas|sekolah, kelas_id? (guru), batas? } */
+function apiLeaderboard(ctx, d) {
+  var all = lbData_(), siswa = ctx.session.role === 'siswa', nisSaya = siswa ? String(ctx.session.ref) : '';
+  var kelasSaya = siswa ? (all.kelasNis[nisSaya] || '') : '';                // dari cache (buka ulang = 0 baca sheet)
+  var cakupan = d.cakupan === 'sekolah' ? 'sekolah' : 'kelas';
+  var kelas = siswa ? kelasSaya : String(d.kelas_id || '');
+  if (cakupan === 'kelas' && !kelas && !siswa) cakupan = 'sekolah';
+  var batas = Math.min(50, Math.max(3, num_(d.batas, 10)));
+  var saring = function (arr) { return arr.filter(function (r) { return cakupan === 'sekolah' || r.kelas_id === kelas; }); };
+  var peringkat = function (arr) { return arr.map(function (r, i) { return Object.assign({ rank: i + 1 }, r); }); };
+  var t = peringkat(saring(all.tercepat)), r = peringkat(saring(all.rata));
+  var cari = function (arr) { for (var i = 0; i < arr.length; i++) if (arr[i].NIS === nisSaya) return arr[i]; return null; };
+  var km = all.km;
+  var hias = function (arr) { return arr.slice(0, batas).map(function (x) { return Object.assign({}, x, { kelas: km[x.kelas_id] || x.kelas_id }); }); };
+  return ok_({ cakupan: cakupan, kelas_id: kelas, nama_kelas: km[kelas] || '', periode: all.periode, minTugas: all.minTugas,
+    tercepat: hias(t), rata: hias(r), total: { tercepat: t.length, rata: r.length },
+    saya: siswa ? { tercepat: cari(t), rata: cari(r) } : null });
+}
+(EXT.hooks.setelahTulis = EXT.hooks.setelahTulis || []).push(function (nama) {
+  if (nama === 'tugas.kirim' || nama === 'kuis.kirim' || nama === 'siswa.save' || nama === 'siswa.bulk' || nama === 'migrasi.csv') bump_('lb', true);
+});
+
+// ---------------------------------------------------------------------
+// 4. KRITERIA PERLU PENDAMPINGAN (Super Admin)
+// ---------------------------------------------------------------------
+/** pdp.atur — d: { BATAS_KEHADIRAN, PDP_BATAS_NILAI ('' = KKM), PDP_DASAR (rata|mapel), PDP_MIN_MAPEL, PDP_ATURAN (ATAU|DAN) } */
+function apiPdpAtur(ctx, d) {
+  var hadir = Number(d.BATAS_KEHADIRAN), nilai = String(d.PDP_BATAS_NILAI === undefined ? '' : d.PDP_BATAS_NILAI).trim();
+  if (!(hadir >= 0 && hadir <= 100)) return fail_('Batas kehadiran harus 0–100%.');
+  if (nilai !== '' && !(Number(nilai) >= 0 && Number(nilai) <= 100)) return fail_('Batas nilai harus 0–100 (kosongkan untuk memakai KKM).');
+  var dasar = d.PDP_DASAR === 'mapel' ? 'mapel' : 'rata', min = Math.round(Number(d.PDP_MIN_MAPEL || 1));
+  if (dasar === 'mapel' && !(min >= 1 && min <= 30)) return fail_('Minimal jumlah mapel harus 1–30.');
+  var aturan = d.PDP_ATURAN === 'DAN' ? 'DAN' : 'ATAU';
+  saveSettings_({ BATAS_KEHADIRAN: String(hadir), PDP_BATAS_NILAI: nilai, PDP_DASAR: dasar, PDP_MIN_MAPEL: String(min || 1), PDP_ATURAN: aturan });
+  var res = ok_({ BATAS_KEHADIRAN: String(hadir), PDP_BATAS_NILAI: nilai, PDP_DASAR: dasar, PDP_MIN_MAPEL: String(min || 1), PDP_ATURAN: aturan }, 'Kriteria pendampingan disimpan.');
+  res.auditDetail = 'hadir<' + hadir + ' nilai<' + (nilai || 'KKM') + ' ' + dasar + (dasar === 'mapel' ? '≥' + min : '') + ' ' + aturan;
+  return res;
+}
+(EXT.hooks.cfg = EXT.hooks.cfg || []).push(function (o, c) {
+  o.PDP_BATAS_NILAI = c.PDP_BATAS_NILAI || ''; o.PDP_DASAR = c.PDP_DASAR || 'rata'; o.PDP_MIN_MAPEL = c.PDP_MIN_MAPEL || '1'; o.PDP_ATURAN = c.PDP_ATURAN || 'ATAU';
+  o.LB_MIN_TUGAS = c.LB_MIN_TUGAS || '3';
+});
+
+// ---------------------------------------------------------------------
+// 5. TURBO — baca Absensi per rentang tanggal (kolom tanggal saja + blok baris yang cocok)
+//    Sheet 54.000 baris: absensi.list 1 bulan ±930 ribu sel → ±290 ribu sel; 1 hari → ±65 ribu sel.
+// ---------------------------------------------------------------------
+function absenRentang_(dari, sampai) {
+  if (_ROWS.Absensi) return _ROWS.Absensi.filter(function (a) { var t = String(a.tanggal); return t >= dari && t <= sampai; });
+  var sh = getSheet_('Absensi'), last = sh.getLastRow();
+  if (last < 2) return [];
+  var h = DB.headers_(sh), ci = h.indexOf('tanggal');
+  if (ci < 0) return DB.all('Absensi').filter(function (a) { var t = String(a.tanggal); return t >= dari && t <= sampai; });
+  var tv = sh.getRange(2, ci + 1, last - 1, 1).getValues(), cocok = [];
+  for (var i = 0; i < tv.length; i++) { var t = normCell_('tanggal', tv[i][0]); t = String(t); if (t >= dari && t <= sampai) cocok.push(i); }
+  if (!cocok.length) return [];
+  var seg = [], s = cocok[0], p = cocok[0];
+  for (var j = 1; j < cocok.length; j++) { if (cocok[j] === p + 1) p = cocok[j]; else { seg.push([s, p]); s = p = cocok[j]; } }
+  seg.push([s, p]);
+  if (seg.length > 25 || cocok.length > tv.length * 0.6) return DB.all('Absensi').filter(function (a) { var t = String(a.tanggal); return t >= dari && t <= sampai; });
+  var out = [];
+  seg.forEach(function (g) {
+    var v = sh.getRange(g[0] + 2, 1, g[1] - g[0] + 1, h.length).getValues();
+    v.forEach(function (row) { if (row.join('') === '') return; var o = {}; for (var k = 0; k < h.length; k++) if (h[k]) o[h[k]] = normCell_(h[k], row[k]); var t2 = String(o.tanggal); if (t2 >= dari && t2 <= sampai) out.push(o); });
+  });
+  return out;
+}
+
+EXT.routes.push(function (add) {
+  add('sa.akun.bulk', apiSaAkunBulkV33, 'sa', true);                      // + aksi 'hapus' (akun login saja)
+  add('absensi.suket', apiAbsenSuket, 'guru', true);
+  add('absensi.suketList', apiAbsenSuketList, 'guru');
+  add('leaderboard', apiLeaderboard, 'any');
+  add('pdp.atur', apiPdpAtur, 'sa', true, { audit: true });
+});
 if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasangEkstensi_();
 
 ;
@@ -8749,4 +9488,55 @@ function seedDemoV32_(rnd) {
   DB.appendBatch('RatingGuru', rRows);
 }
 
+// =====================================================================
+// v3.3 — data contoh Presensi Pegawai (kategori, izin + suket, aktivitas) & suket siswa
+// =====================================================================
+(EXT.hooks.seedDemo = EXT.hooks.seedDemo || []).push(function (rnd) { if (SCHEMA.IzinPegawai) seedDemoV33_(rnd); });
+var DEMO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+function seedDemoV33_(rnd) {
+  rnd = rnd || prng_(20261021);
+  if (!SCHEMA.IzinPegawai || DB.all('IzinPegawai').length || DB.all('AktivitasPegawai').length) return;
+  var now = nowIso_(), tdy = today_(), by = {}; DB.all('Users').forEach(function (u) { by[lower_(u.email)] = u; });
+  var G = by['guru@sekolah.sch.id'], SN = by['siti.nurhaliza@sekolah.sch.id'], AR = by['ahmad.rifai@sekolah.sch.id'], SA = by['admin@sekolah.sch.id'];
+  var ctxP = function (u) { return { session: { uid: u.user_id, email: u.email, role: u.role, ref: u.ref_id } }; };
+  var hari = function (n) { var t = tdy, k = 0; while (k < n) { t = pegTambahHari_(t, -1); if (pegHari_(t) !== 'Minggu' && pegHari_(t) !== 'Sabtu') k++; } return t; };
+  // 1) kategori presensi pada riwayat guru@ (Dinas Luar, Diklat, Apel, Dinas Dalam)
+  var pres = DB.all('PresensiGuru'), upd = [], ubah = [['Dinas Luar', 'Kunjungan studi banding ke SMAN 3 Bogor'], ['Diklat', 'Workshop Kurikulum Merdeka – LPMP Jawa Barat'], ['Apel', 'Apel & Festival Budaya Kabupaten'], ['Dinas Dalam', 'Panitia ujian praktik di laboratorium']];
+  if (G) {
+    pres.filter(function (p) { return p.user_id === G.user_id && p.jam_masuk && String(p.tanggal) < tdy; }).sort(function (a, b) { return String(b.tanggal).localeCompare(String(a.tanggal)); }).slice(1, 5)
+      .forEach(function (p, i) { var x = ubah[i]; upd.push({ presensi_id: p.presensi_id, status: x[0], keterangan: x[0] + ': ' + x[1], lokasi_id: x[0] === 'Dinas Dalam' ? p.lokasi_id : 'LUAR', terlambat: x[0] === 'Dinas Dalam' ? p.terlambat : 'TIDAK', jarak_m: x[0] === 'Dinas Dalam' ? p.jarak_m : String(4200 + i * 1700) }); });
+    DB.updateBatch('PresensiGuru', 'presensi_id', upd);
+  }
+  // 2) pengajuan tidak hadir + suket: Siti (Sakit, menunggu), Ahmad (Izin, disetujui), guru@ (Cuti, ditolak)
+  var izin = [], bukti = [], ids = reserveIds_('IzinPegawai', 3), bid = reserveIds_('BuktiKehadiran', 3), fid = '';
+  try { fid = saveBase64File_(pegFolder_(), 'SUKET_CONTOH.png', 'image/png', DEMO_PNG).getId(); } catch (e) { fid = ''; }
+  var buat = function (i, u, nuptk, nama, jenis, dari, sampai, alasan, status, catatan) {
+    if (!u) return;
+    bukti.push({ bukti_id: bid[i], jenis: 'suket_guru', ref_id: ids[i], pemilik: nuptk, tanggal: dari, file_id: fid, nama_file: 'surat-keterangan-' + jenis.toLowerCase() + '.png', mime: 'image/png', ukuran: 68, diunggah_oleh: u.user_id, dibuat_pada: now });
+    izin.push({ izin_id: ids[i], user_id: u.user_id, NUPTK: nuptk, nama: nama, jenis: jenis, tanggal_mulai: dari, tanggal_selesai: sampai, jumlah_hari: pegHariIzin_(dari, sampai).length, alasan: alasan, bukti_id: bid[i], status: status,
+      diputuskan_oleh: status === 'Menunggu' ? '' : (SA ? SA.email : ''), diputuskan_pada: status === 'Menunggu' ? '' : now, catatan_putusan: catatan || '', dibuat_pada: now, diperbarui_pada: now });
+  };
+  buat(0, SN, '19840215', 'Siti Nurhaliza, S.Si., M.Sc.', 'Sakit', tdy, tdy, 'Demam tinggi, istirahat sesuai surat dokter klinik.', 'Menunggu');
+  buat(1, AR, '19770821', "Ahmad Rifa'i, M.Pd.", 'Izin', hari(3), hari(3), 'Menghadiri pernikahan saudara kandung di Garut.', 'Disetujui', 'Semoga lancar. Tugas kelas dititipkan ke guru piket.');
+  buat(2, G, '19780215', 'Drs. H. Hartono, M.Si.', 'Cuti', pegTambahHari_(tdy, 14), pegTambahHari_(tdy, 15), 'Cuti tahunan keluarga.', 'Ditolak', 'Bertepatan dengan PTS. Silakan ajukan ulang setelah PTS.');
+  DB.appendBatch('BuktiKehadiran', bukti); DB.appendBatch('IzinPegawai', izin);
+  if (AR) {                                                      // hari izin Ahmad tercatat di presensi
+    var t3 = hari(3), ada = DB.all('PresensiGuru').filter(function (p) { return String(p.NUPTK) === '19770821' && String(p.tanggal) === t3; })[0];
+    var r = { user_id: AR.user_id, NUPTK: '19770821', nama: "Ahmad Rifa'i, M.Pd.", tanggal: t3, jam_masuk: '', jam_pulang: '', status: 'Izin', lokasi_id: '', latitude: '', longitude: '', jarak_m: '', foto_id: '', terlambat: '', device_id: '',
+      keterangan: 'Izin disetujui [' + ids[1] + ']: Menghadiri pernikahan saudara kandung di Garut.', diperbarui_pada: now };
+    if (ada) { r.presensi_id = ada.presensi_id; DB.updateBatch('PresensiGuru', 'presensi_id', [r]); } else { r.presensi_id = reserveIds_('PresensiGuru', 1)[0]; DB.appendBatch('PresensiGuru', [r]); }
+  }
+  // 3) aktivitas harian guru@ (3 hari terakhir)
+  if (G) {
+    var ak = [['07:15', '08:45', 'Mengajar Biologi XII IPA 1', 'Pertemuan sistem peredaran darah: pengamatan preparat darah.', 'Jurnal & absensi pertemuan tersimpan'],
+      ['09:00', '10:30', 'Mengajar Biologi XI IPA 1', 'Diskusi golongan darah & simulasi transfusi.', '15 siswa hadir'],
+      ['13:00', '14:00', 'Koreksi Kuis 1 LMS', 'Menilai jawaban esai kuis sistem peredaran darah.', '19 kuis dinilai'],
+      ['14:00', '15:00', 'Rapat MGMP Biologi', 'Penyusunan modul ajar semester ganjil.', 'Draf modul bab 4'],
+      ['07:15', '08:45', 'Mengajar Biologi XII IPA 1', 'Praktik mengukur tekanan darah.', 'Data kelas terkumpul'],
+      ['10:45', '12:15', 'Pembinaan KIR', 'Bimbingan proposal penelitian siswa.', '3 kelompok konsultasi']];
+    var aid = reserveIds_('AktivitasPegawai', ak.length);
+    DB.appendBatch('AktivitasPegawai', ak.map(function (x, i) { return { aktivitas_id: aid[i], user_id: G.user_id, NUPTK: '19780215', nama: 'Drs. H. Hartono, M.Si.', tanggal: i < 4 ? hari(1) : hari(2), jam_mulai: x[0], jam_selesai: x[1], kegiatan: x[2], uraian: x[3], hasil: x[4], lampiran_id: '', dibuat_pada: now, diperbarui_pada: now }; }));
+  }
+  bump_('presensi'); bump_('izinPeg'); bump_('aktPeg');
+}
 if (typeof pasangEkstensi_ === 'function' && typeof SCHEMA !== 'undefined') pasangEkstensi_();
